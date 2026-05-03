@@ -14,7 +14,7 @@ use crux_core::tokens;
 use crate::types::{TurnEvent, TurnStatus};
 
 /// Tool family for grouping. Adding a new bucket = one match arm in
-/// [`bucket_for`] + one writer in [`render_bucket`].
+/// [`bucket_for`] + one writer in the private `render_bucket` helper.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Bucket {
     Read,
