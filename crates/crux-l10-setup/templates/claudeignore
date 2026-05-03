@@ -1,0 +1,51 @@
+# CRUX-managed exclusions for Claude / Cursor / Cline / etc.
+# Files listed here are NEVER auto-loaded. They cost 0 tokens.
+# Agents may still read them on explicit request.
+
+# CRUX-internal scaffolding (load only on demand)
+.crux/completions/**
+.crux/sessions/**
+.crux/captures/**
+
+# Archived docs
+docs/archive/**
+
+# Build / dependency artifacts
+node_modules/**
+target/**
+dist/**
+build/**
+out/**
+.next/**
+.cache/**
+__pycache__/**
+.pytest_cache/**
+coverage/**
+
+# VCS internals
+.git/**
+.svn/**
+.hg/**
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# IDE noise
+.vscode/**
+.idea/**
+*.swp
+*.swo
+
+# Logs & temp
+*.log
+logs/**
+tmp/**
+temp/**
+
+# OS noise
+.DS_Store
+Thumbs.db

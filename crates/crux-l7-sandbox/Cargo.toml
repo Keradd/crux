@@ -1,0 +1,31 @@
+[package]
+name = "crux-l7-sandbox"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "CRUX Layer 7: subprocess sandbox executor (Python / Bash / Node)."
+
+[dependencies]
+crux-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+# L7.5 — hard isolation extras. `libc` is only pulled on Linux targets
+# where it is used to apply rlimits in the child's pre-exec hook.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+landlock = { version = "0.4", optional = true }
+
+[features]
+# Enable kernel-level filesystem confinement for `IsolationLevel::Hard`.
+# Linux-only and requires kernel >= 5.13.
+landlock = ["dep:landlock"]
+# Enable seccomp syscall filtering for `IsolationLevel::Hard`.
+# Linux-only, uses BPF to restrict available syscalls per runtime.
+seccomp = []
+
+[dev-dependencies]
+tempfile = "3"

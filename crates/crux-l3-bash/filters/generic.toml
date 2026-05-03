@@ -1,0 +1,9 @@
+# Last-resort filter for any command not handled by a more specific rule.
+# Strips ANSI, caps to 200 lines, leaves stderr/stdout intact otherwise.
+
+[filters.generic]
+description    = "Generic fallback: strip ANSI + 200-line cap."
+match_command  = ".*"
+strip_ansi     = true
+max_lines      = 200
+truncate_lines_at = 500

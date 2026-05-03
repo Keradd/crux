@@ -1,0 +1,29 @@
+# jest / vitest test runners.
+
+[filters.jest]
+description    = "Compress jest/vitest output to summary + failures."
+match_command  = "^(npx\\s+)?(jest|vitest)(\\s|$)"
+strip_ansi     = true
+max_lines      = 100
+strip_lines_matching = [
+  "^PASS\\s",
+  "^\\s+✓\\s",
+  "^\\s*\\([0-9]+ ms\\)$",
+]
+
+[[tests]]
+name     = "jest_keeps_summary"
+filter   = "jest"
+input    = """PASS  src/x.test.ts
+  ✓ adds (3 ms)
+  ✓ subtracts (1 ms)
+
+Test Suites: 1 passed, 1 total
+Tests:       2 passed, 2 total
+Snapshots:   0 total
+Time:        1.234 s
+"""
+expected = """Test Suites: 1 passed, 1 total
+Tests:       2 passed, 2 total
+Snapshots:   0 total
+Time:        1.234 s"""

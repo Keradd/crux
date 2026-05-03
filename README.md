@@ -1,0 +1,186 @@
+# CRUX
+
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+[![Rust 1.75+](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](https://www.rust-lang.org)
+[![Tests](https://img.shields.io/badge/tests-289%20passing-brightgreen.svg)](#testing)
+[![CI](https://github.com/Keradd/crux/actions/workflows/ci.yml/badge.svg)](https://github.com/Keradd/crux/actions/workflows/ci.yml)
+
+> **Compression Runtime for Universal eXecution.**
+> One Rust binary. One SQLite database. Ten layers. Local-first. Zero telemetry.
+
+CRUX is a token-optimization runtime that sits between an AI coding agent
+(Claude Code, Cursor, Cline, Continue, Aider, …) and the agent's tools
+(Read, Edit, Bash, MCP servers). It reduces token usage by 60–95 % across
+real workloads without degrading task quality, by attacking every layer
+where tokens are wasted: prose verbosity, tool-call bloat, redundant file
+reads, missing structure, lost context, and quality decay.
+
+---
+
+## Why CRUX
+
+| Pain point | CRUX layer | Mechanism |
+|---|---|---|
+| Verbose model output | **L1** profiles | Compressed-output skills + project-tuned style guides |
+| Bloated MCP tool descriptions | **L2** shrinker | Stdio JSON-RPC proxy that rewrites `tools/list` |
+| Long, noisy bash output | **L3** bash filter | TOML pipeline (8 stages) + 5 built-in filters |
+| Re-reading the same file | **L4** read cache | mtime + range cache, LCS delta, `.contextignore` |
+| Whole-file reads to find a symbol | **L5** AST graph | Tree-sitter graph with cross-file call resolution |
+| Grep-only code search | **L6** hybrid search | BM25 (porter + trigram) + dense vectors + RRF |
+| Unsafe code execution | **L7** sandbox | Subprocess + rlimits + landlock + seccomp (opt-in) |
+| Lost context across sessions | **L8** memory | FTS5 + decay-ranked observations |
+| Quality / loop drift | **L9** coach | Score, loop detect, CLAUDE.md drift |
+| Inconsistent project setup | **L10** setup | `crux init` scaffold + profile templates |
+
+All ten layers are independent and opt-in via TOML.
+
+---
+
+## Install
+
+### From source
+
+```bash
+git clone https://github.com/Keradd/crux.git
+cd crux
+cargo build --release
+# binary at ./target/release/crux (~11 MB stripped on Linux x86_64)
+```
+
+### Requirements
+
+- Rust **1.75+**
+- SQLite is bundled via `rusqlite` — no system dependency.
+- Optional: `--features crux-l7-sandbox/seccomp` enables Linux seccomp BPF
+  syscall filtering (requires kernel ≥ 3.5).
+
+---
+
+## Quick start
+
+```bash
+# Scaffold a project (writes CLAUDE.md, .crux/config.toml, .claudeignore)
+crux init --non-interactive --profile coding
+
+# L3 — filter bash output (git/cargo/npm/jest/generic, all TOML-defined)
+crux bash git status
+
+# L5 — AST graph (Merkle-incremental; second run is a near no-op)
+crux index
+crux find ReadCacheManager
+crux impact crates::crux-l4-readcache::src::delta::compute_delta --depth 3
+
+# L6 — hybrid search (BM25 + dense + RRF + fuzzy fallback)
+crux reindex
+crux search "delta cache" --kind code --limit 5
+
+# L7 — sandboxed code execution
+crux execute --runtime python -c 'print(2+2)'
+crux execute --runtime bash   -c 'sleep 5' --timeout 1     # exits 124
+crux execute --runtime bash   -c 'ulimit -v' --isolate hard
+
+# L8 — persistent memory (FTS5 + decay)
+crux remember --kind decision --title "Use Pinia" --content "..."
+crux recall Pinia
+
+# L9 — quality coach
+crux audit
+crux coach drift
+
+# MCP server (11 tools, stdio JSON-RPC)
+crux mcp
+crux mcp-shrink npx @modelcontextprotocol/server-filesystem /some/path
+```
+
+`CRUX_HOME` overrides the default `~/.crux` data directory.
+`CRUX_PROJECT` overrides project-root detection.
+
+---
+
+## MCP tools
+
+Run `crux mcp` to expose CRUX over stdio JSON-RPC. The server advertises
+the following tools:
+
+| Tool | Layer | Purpose |
+|---|---|---|
+| `crux_remember` / `crux_recall` | L8 | Persist & search observations |
+| `crux_read` | L4 | Cache-aware file reads with delta replies |
+| `crux_bash_filter` | L3 | Apply L3 filter to a `(command, output)` pair |
+| `crux_audit` | L9 | Health snapshot + telemetry summary |
+| `crux_find_symbol` / `crux_get_symbol_source` | L5 | Symbol lookup |
+| `crux_query_graph` / `crux_impact` | L5 | Callers / callees / blast radius |
+| `crux_search` | L6 | Hybrid BM25 + dense + RRF over indexed chunks |
+| `crux_execute` | L7 | Run python / bash / node snippets in the sandbox |
+
+---
+
+## Workspace layout
+
+```
+crux/
+├── Cargo.toml                 # workspace manifest
+├── crates/
+│   ├── crux-core/             # config, db, errors, paths, telemetry, merkle
+│   ├── crux-l3-bash/          # TOML filter pipeline + 5 built-in filters
+│   ├── crux-l4-readcache/     # read cache + LCS delta + .contextignore
+│   ├── crux-l5-ast/           # tree-sitter AST graph (Rust/Python/TS/JS)
+│   ├── crux-l6-search/        # hybrid BM25 + dense + RRF + Merkle sync
+│   ├── crux-l7-sandbox/       # subprocess + rlimits + landlock + seccomp
+│   ├── crux-l8-memory/        # observations + decay engine + FTS5
+│   ├── crux-l9-coach/         # quality score + loop detect + drift
+│   ├── crux-l10-setup/        # `crux init` + profile templates
+│   ├── crux-mcp/              # MCP stdio JSON-RPC server + L2 shrinker
+│   └── crux-cli/              # `crux` binary (clap-based CLI)
+├── docs/
+│   └── ARCHITECTURE.md        # full architecture specification
+├── CHANGELOG.md
+├── CONTRIBUTING.md
+├── LICENSE-MIT
+└── LICENSE-APACHE
+```
+
+---
+
+## Documentation
+
+- **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)** — full design specification:
+  goals, tech stack, data model, per-layer internals, security model,
+  performance targets, roadmap.
+- **[`CHANGELOG.md`](CHANGELOG.md)** — release-notable changes.
+- **[`CONTRIBUTING.md`](CONTRIBUTING.md)** — coding conventions, test
+  policy, PR checklist.
+
+---
+
+## Testing
+
+```bash
+cargo test                                          # 289 passing / 0 failed
+cargo test --features crux-l7-sandbox/seccomp       # 299 passing / 0 failed (Linux)
+cargo bench                                         # criterion benchmarks (L4, L5, L6)
+```
+
+Inline TOML goldens for L3 filters live in
+`crates/crux-l3-bash/filters/*.toml` under `[[tests]]` and run via the
+standard `cargo test` invocation.
+
+---
+
+## License
+
+Dual-licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or
+  <http://www.apache.org/licenses/LICENSE-2.0>)
+- MIT license ([LICENSE-MIT](LICENSE-MIT) or
+  <http://opensource.org/licenses/MIT>)
+
+at your option.
+
+### Contribution
+
+Unless you explicitly state otherwise, any contribution intentionally
+submitted for inclusion in the work by you, as defined in the
+Apache-2.0 license, shall be dual-licensed as above, without any
+additional terms or conditions.

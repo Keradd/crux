@@ -1,0 +1,83 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/crux-core",
+    "crates/crux-l3-bash",
+    "crates/crux-l4-readcache",
+    "crates/crux-l5-ast",
+    "crates/crux-l6-search",
+    "crates/crux-l7-sandbox",
+    "crates/crux-l8-memory",
+    "crates/crux-l9-coach",
+    "crates/crux-l10-setup",
+    "crates/crux-mcp",
+    "crates/crux-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+authors = ["CRUX contributors"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Keradd/crux"
+homepage = "https://github.com/Keradd/crux"
+documentation = "https://github.com/Keradd/crux/blob/main/docs/ARCHITECTURE.md"
+readme = "README.md"
+keywords = ["llm", "tokens", "ai-agent", "mcp", "tree-sitter"]
+categories = ["command-line-utilities", "development-tools"]
+
+[workspace.dependencies]
+# Internal
+crux-core = { path = "crates/crux-core" }
+crux-l3-bash = { path = "crates/crux-l3-bash" }
+crux-l4-readcache = { path = "crates/crux-l4-readcache" }
+crux-l5-ast = { path = "crates/crux-l5-ast" }
+crux-l6-search = { path = "crates/crux-l6-search" }
+crux-l7-sandbox = { path = "crates/crux-l7-sandbox" }
+crux-l8-memory = { path = "crates/crux-l8-memory" }
+crux-l9-coach = { path = "crates/crux-l9-coach" }
+crux-l10-setup = { path = "crates/crux-l10-setup" }
+crux-mcp = { path = "crates/crux-mcp" }
+
+# CLI
+clap = { version = "4.5", features = ["derive", "env"] }
+dialoguer = "0.11"
+
+# Errors
+anyhow = "1"
+thiserror = "1"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+bincode = "1.3"
+
+# Database
+rusqlite = { version = "0.31", features = ["bundled"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Filesystem
+dirs = "5"
+
+# Hashing (for content_hash, etc.)
+sha2 = "0.10"
+hex = "0.4"
+
+# Path utilities
+path-clean = "1"
+
+# Benchmarks
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

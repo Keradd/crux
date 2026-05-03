@@ -1,0 +1,7 @@
+# Files Layer 4 read-cache will hard-block (Read tool returns digest only).
+# Patterns are gitignore-style. One per line.
+
+# Examples — uncomment and adjust:
+# secrets.json
+# *.private.key
+# .env*

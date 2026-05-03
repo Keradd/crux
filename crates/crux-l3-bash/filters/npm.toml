@@ -1,0 +1,38 @@
+# npm / pnpm / yarn install + run.
+
+[filters.npm-install]
+description    = "Drop install progress; keep summary lines."
+match_command  = "^(npm|pnpm|yarn)\\s+(install|i|ci|add)(\\s|$)"
+strip_ansi     = true
+head_lines     = 10
+tail_lines     = 5
+max_lines      = 30
+strip_lines_matching = [
+  "^npm warn",
+  "^npm notice",
+  "^npm timing",
+  "^\\s*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]",
+  "^Resolving:",
+  "^Downloading:",
+  "^Building fresh packages",
+  "^[➕]\\s",
+  "^Already up to date",
+]
+
+[[filters.npm-install.match_output]]
+pattern = "^up to date,? \\d+ packages? in \\d"
+message = "npm: up to date"
+
+[filters.npm-run]
+description    = "Cap `npm run`/`yarn run` output to 80 lines, head+tail."
+match_command  = "^(npm|pnpm|yarn)\\s+(run|test|start|build|dev)(\\s|$)"
+strip_ansi     = true
+head_lines     = 30
+tail_lines     = 30
+max_lines      = 80
+
+[[tests]]
+name     = "npm_install_uptodate"
+filter   = "npm-install"
+input    = "up to date, 412 packages in 1.2s\n"
+expected = "npm: up to date"

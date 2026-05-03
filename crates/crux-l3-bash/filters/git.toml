@@ -1,0 +1,92 @@
+# git family — status, diff, log, branch.
+# All scalar fields go before any [[arrays]] of subtables (TOML rule).
+
+[filters.git-status]
+description       = "Compress `git status` output to one summary line per file."
+match_command     = "^git\\s+status(\\s|$)"
+strip_ansi        = true
+truncate_lines_at = 200
+max_lines         = 80
+strip_lines_matching = [
+  "^$",
+  "^Your branch ",
+  "^\\s+\\(use ",
+]
+
+[[filters.git-status.match_output]]
+pattern = "nothing to commit, working tree clean"
+message = "git status: clean"
+
+[[filters.git-status.replace]]
+pattern     = "^On branch (\\S+).*$"
+replacement = "branch: $1"
+
+[[filters.git-status.replace]]
+pattern     = "^Changes not staged for commit:.*$"
+replacement = "unstaged:"
+
+[[filters.git-status.replace]]
+pattern     = "^Changes to be committed:.*$"
+replacement = "staged:"
+
+[[filters.git-status.replace]]
+pattern     = "^Untracked files:.*$"
+replacement = "untracked:"
+
+[[filters.git-status.replace]]
+pattern     = "^\\s+(modified|new file|deleted|renamed):\\s+"
+replacement = "  $1: "
+
+# ── git log --oneline ──
+[filters.git-log-oneline]
+description    = "Trim long oneline logs to first/last."
+match_command  = "^git\\s+log\\s+--oneline\\b"
+strip_ansi     = true
+head_lines     = 30
+tail_lines     = 5
+max_lines      = 60
+
+# ── git branch ──
+[filters.git-branch]
+description       = "Pass-through with reasonable cap."
+match_command     = "^git\\s+branch(\\s|$)"
+strip_ansi        = true
+truncate_lines_at = 120
+max_lines         = 100
+
+# ── git diff --stat ──
+[filters.git-diff-stat]
+description    = "Pass through `git diff --stat`; cap absurdly long lists."
+match_command  = "^git\\s+diff\\s+(--stat|--shortstat)\\b"
+strip_ansi     = true
+max_lines      = 80
+
+# ── inline tests ──
+[[tests]]
+name     = "git_status_clean"
+filter   = "git-status"
+input    = "On branch main\nYour branch is up to date with 'origin/main'.\n\nnothing to commit, working tree clean\n"
+expected = "git status: clean"
+
+[[tests]]
+name     = "git_status_with_changes"
+filter   = "git-status"
+input    = """On branch main
+Your branch is up to date with 'origin/main'.
+
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+\tmodified:   src/lib.rs
+\tmodified:   src/main.rs
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+\tnew.txt
+"""
+expected = """branch: main
+unstaged:
+  modified: src/lib.rs
+  modified: src/main.rs
+untracked:
+\tnew.txt"""

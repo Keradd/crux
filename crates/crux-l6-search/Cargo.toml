@@ -1,0 +1,41 @@
+[package]
+name = "crux-l6-search"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "CRUX Layer 6: hybrid search (BM25 porter + trigram + dense vectors via RRF)."
+
+[dependencies]
+crux-core.workspace = true
+crux-l5-ast.workspace = true
+rusqlite.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true
+
+# Real semantic embedder via ONNX runtime. Pulled in only when the
+# `fastembed` feature is enabled so the default build stays offline +
+# dependency-light. We disable the upstream defaults so we don't pull
+# `native-tls` (which links system OpenSSL); rustls keeps the build
+# self-contained on most platforms.
+fastembed = { version = "5", default-features = false, features = [
+    "ort-download-binaries-rustls-tls",
+    "hf-hub-rustls-tls",
+], optional = true }
+
+[features]
+default = []
+fastembed = ["dep:fastembed"]
+
+[dev-dependencies]
+tempfile = "3"
+criterion.workspace = true
+
+[[bench]]
+name = "l6_bench"
+harness = false

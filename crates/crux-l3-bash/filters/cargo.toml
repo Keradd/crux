@@ -1,0 +1,97 @@
+# cargo family — build, check, test, clippy.
+
+[filters.cargo-build]
+description    = "Drop progress noise from `cargo build`/`check`."
+match_command  = "^cargo\\s+(build|check|run)(\\s|$)"
+strip_ansi     = true
+max_lines      = 80
+on_empty       = "cargo: ok"
+strip_lines_matching = [
+  "^\\s*Compiling\\s",
+  "^\\s*Finished\\s",
+  "^\\s*Updating\\s",
+  "^\\s*Downloaded\\s",
+  "^\\s*Downloading\\s",
+  "^\\s*Building\\s",
+  "^\\s*Fresh\\s",
+  "^\\s*Documenting\\s",
+  "^$",
+]
+
+[filters.cargo-test]
+description    = "Cap `cargo test` output, keep summary."
+match_command  = "^cargo\\s+(test|nextest)(\\s|$)"
+strip_ansi     = true
+head_lines     = 30
+tail_lines     = 30
+max_lines      = 80
+strip_lines_matching = [
+  "^\\s*Compiling\\s",
+  "^\\s*Finished\\s",
+  "^\\s*Running\\s+unittests\\s",
+  "^\\s*Running\\s+tests/",
+  "^\\s*Doc-tests\\s",
+  "^running\\s+0\\s+tests",
+]
+
+[filters.cargo-clippy]
+
+description    = "Pass clippy through but cap to 100 lines."
+match_command  = "^cargo\\s+clippy(\\s|$)"
+strip_ansi     = true
+head_lines     = 60
+tail_lines     = 20
+max_lines      = 100
+strip_lines_matching = [
+  "^\\s*Checking\\s",
+  "^\\s*Finished\\s",
+]
+
+# ── inline tests ──
+[[tests]]
+name     = "cargo_build_quiet"
+filter   = "cargo-build"
+input    = "   Compiling crux-core v0.1.0\n   Compiling crux-cli v0.1.0\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 17.20s\n"
+expected = "cargo: ok"
+
+[[tests]]
+name     = "cargo_test_keeps_failures"
+filter   = "cargo-test"
+input    = """   Compiling crux-core v0.1.0
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.86s
+     Running unittests src/lib.rs (target/debug/deps/crux_core-x)
+
+running 5 tests
+test config::tests::project_overrides_global ... ok
+test telemetry::tests::record_then_aggregate ... FAILED
+test paths::tests::within_check ... ok
+test config::tests::defaults_round_trip ... ok
+test db::tests::migrations_apply_once ... ok
+
+failures:
+
+---- telemetry::tests::record_then_aggregate stdout ----
+panicked at boom
+
+failures:
+    telemetry::tests::record_then_aggregate
+
+test result: FAILED. 4 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out
+"""
+expected = """
+running 5 tests
+test config::tests::project_overrides_global ... ok
+test telemetry::tests::record_then_aggregate ... FAILED
+test paths::tests::within_check ... ok
+test config::tests::defaults_round_trip ... ok
+test db::tests::migrations_apply_once ... ok
+
+failures:
+
+---- telemetry::tests::record_then_aggregate stdout ----
+panicked at boom
+
+failures:
+    telemetry::tests::record_then_aggregate
+
+test result: FAILED. 4 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out"""

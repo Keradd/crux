@@ -1,0 +1,24 @@
+[package]
+name = "crux-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "CRUX shared foundation: config, db, errors, schema."
+
+[dependencies]
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+rusqlite.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+dirs.workspace = true
+sha2.workspace = true
+hex.workspace = true
+path-clean.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
