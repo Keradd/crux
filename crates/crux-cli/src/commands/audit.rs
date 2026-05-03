@@ -68,6 +68,7 @@ pub fn run(cli: &Cli, _args: &Args) -> Result<()> {
     print_layer(&runtime.config.layers.l8_memory, "L8  memory");
     print_layer(&runtime.config.layers.l9_coach, "L9  coach");
     print_layer(&runtime.config.layers.l10_setup, "L10 setup");
+    print_layer(&runtime.config.layers.l11_digest, "L11 digest");
     println!();
 
     println!("snapshot:");
@@ -143,5 +144,6 @@ fn active_layer_summary(t: &crux_core::config::LayerToggles) -> serde_json::Valu
         "l8_memory": t.l8_memory,
         "l9_coach": t.l9_coach,
         "l10_setup": t.l10_setup,
+        "l11_digest": t.l11_digest,
     })
 }

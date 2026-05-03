@@ -145,24 +145,24 @@ impl<'c> CoachEngine<'c> {
 
         // ── layer coverage — count what's ON
         let active = active_layer_count(&self.config.layers);
-        let unused = 10 - active;
+        let unused = 11 - active;
         if active <= 3 {
             score -= 5;
             patterns_bad.push(
                 Pattern::bad(
                     "Few layers active",
-                    format!("only {active}/10 layers enabled."),
+                    format!("only {active}/11 layers enabled."),
                     Severity::Medium,
                 )
                 .with_fix("Enable at minimum L3/L4/L8 — see `.crux/config.toml`."),
             );
         }
 
-        // ── L7 sandbox note (opt-in layer)
+        // ── L7 sandbox note (default-on since 2026-05-03)
         if !self.config.layers.l7_sandbox {
             patterns_good.push(Pattern::good(
                 "Sandbox disabled",
-                "L7 sandbox is opt-in for security. Enable in `.crux/config.toml` when you need `crux_execute`.",
+                "L7 sandbox is explicitly disabled. Re-enable with `[layers] l7_sandbox = true` if you want `crux_execute` to replace multi-file read patterns (95-98% token reduction on that workflow per CRUX-DESIGN §13.1).",
             ));
         }
 
@@ -278,6 +278,7 @@ fn active_layer_count(t: &crux_core::config::LayerToggles) -> u32 {
         t.l8_memory,
         t.l9_coach,
         t.l10_setup,
+        t.l11_digest,
     ]
     .into_iter()
     .filter(|b| *b)

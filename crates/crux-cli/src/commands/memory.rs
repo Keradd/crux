@@ -170,6 +170,7 @@ pub fn run_recall(cli: &Cli, args: &RecallArgs) -> Result<()> {
         project_root: Some(project.display().to_string()),
         kinds,
         symbol: args.symbol.clone(),
+        file_paths: Vec::new(),
         limit: args.limit,
         include_archived: args.include_archived,
     };

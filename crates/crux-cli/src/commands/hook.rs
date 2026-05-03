@@ -27,6 +27,7 @@ use clap::Subcommand;
 use serde::{Deserialize, Serialize};
 
 use crux_core::Runtime;
+use crux_l11_digest::{DigestEngine, TurnEvent, TurnStatus};
 use crux_l4_readcache::{CacheDecision, CheckOptions, ContextIgnore, ReadCacheManager, ReadEvent};
 
 use super::resolve_project_root;
@@ -63,6 +64,8 @@ struct ToolEvent {
     #[serde(default)]
     tool_input: ToolInput,
     #[serde(default)]
+    tool_response: ToolResponse,
+    #[serde(default)]
     session_id: String,
     #[serde(default)]
     agent_id: String,
@@ -76,6 +79,29 @@ struct ToolInput {
     offset: Option<u64>,
     #[serde(default)]
     limit: Option<u64>,
+    /// Bash uses `command`; we extract it for L11 turn-event targets.
+    #[serde(default)]
+    command: Option<String>,
+    /// Grep / Glob / mcp search tools use `pattern`/`query`.
+    #[serde(default)]
+    pattern: Option<String>,
+    #[serde(default)]
+    query: Option<String>,
+    /// Symbol-style targets (`crux_get_symbol_source`, `crux_find_symbol`).
+    #[serde(default)]
+    qualified_name: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ToolResponse {
+    /// Claude Code sets this when a tool call fails. Present + truthy
+    /// → L11 marks the event as `err`.
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
+    is_error: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -234,6 +260,17 @@ fn post_tool(cli: &Cli) -> Result<()> {
 
     let event = read_event_from_stdin().context("reading hook event from stdin")?;
 
+    let agent_id = if event.agent_id.is_empty() {
+        "default".to_string()
+    } else {
+        event.agent_id.clone()
+    };
+    let session_id = if event.session_id.is_empty() {
+        "default".to_string()
+    } else {
+        event.session_id.clone()
+    };
+
     if matches!(
         event.tool_name.as_str(),
         "Edit" | "Write" | "MultiEdit" | "NotebookEdit"
@@ -241,18 +278,29 @@ fn post_tool(cli: &Cli) -> Result<()> {
         if let Some(fp) = event.tool_input.file_path.as_deref() {
             let mgr = ReadCacheManager::new(&runtime.conn);
             let path_buf = PathBuf::from(fp);
-            let agent_id = if event.agent_id.is_empty() {
-                "default"
-            } else {
-                event.agent_id.as_str()
-            };
-            let session_id = if event.session_id.is_empty() {
-                "default"
-            } else {
-                event.session_id.as_str()
-            };
-            mgr.invalidate(agent_id, session_id, &project, &path_buf)?;
+            mgr.invalidate(&agent_id, &session_id, &project, &path_buf)?;
         }
+    }
+
+    if runtime.config.layers.l11_digest && !event.tool_name.is_empty() {
+        let digest = DigestEngine::new(&runtime.conn, runtime.config.layer.l11.clone());
+        let target = derive_target(&event);
+        let status = derive_status(&event);
+        let summary = build_summary(&event.tool_name, target.as_deref(), status);
+        let turn = TurnEvent {
+            session_id: session_id.clone(),
+            project_root: project.display().to_string(),
+            agent_id: Some(agent_id.clone()),
+            tool_name: event.tool_name.clone(),
+            target,
+            status,
+            original_tokens: 0,
+            compressed_tokens: 0,
+            summary,
+        };
+        // Record best-effort: a digest failure must never block the
+        // post-tool hook (which is otherwise pure infrastructure).
+        let _ = digest.record(&turn);
     }
 
     respond(&HookResponse {
@@ -260,6 +308,63 @@ fn post_tool(cli: &Cli) -> Result<()> {
         message: None,
     });
     Ok(())
+}
+
+fn derive_target(ev: &ToolEvent) -> Option<String> {
+    let i = &ev.tool_input;
+    if let Some(fp) = i.file_path.as_deref() {
+        return Some(fp.to_string());
+    }
+    if let Some(cmd) = i.command.as_deref() {
+        return Some(cmd.to_string());
+    }
+    if let Some(q) = i.query.as_deref() {
+        return Some(q.to_string());
+    }
+    if let Some(p) = i.pattern.as_deref() {
+        return Some(p.to_string());
+    }
+    if let Some(qn) = i.qualified_name.as_deref() {
+        return Some(qn.to_string());
+    }
+    if let Some(n) = i.name.as_deref() {
+        return Some(n.to_string());
+    }
+    None
+}
+
+fn derive_status(ev: &ToolEvent) -> TurnStatus {
+    if ev.tool_response.is_error.unwrap_or(false)
+        || ev
+            .tool_response
+            .error
+            .as_deref()
+            .map(|s| !s.is_empty())
+            .unwrap_or(false)
+    {
+        TurnStatus::Err
+    } else {
+        TurnStatus::Ok
+    }
+}
+
+fn build_summary(tool: &str, target: Option<&str>, status: TurnStatus) -> String {
+    let base = match target {
+        Some(t) if !t.is_empty() => {
+            // Truncate noisy targets to keep the summary one-liner sane.
+            let trimmed = t.lines().next().unwrap_or(t);
+            if trimmed.len() > 80 {
+                format!("{tool} {}…", &trimmed[..80])
+            } else {
+                format!("{tool} {}", trimmed)
+            }
+        }
+        _ => tool.to_string(),
+    };
+    match status {
+        TurnStatus::Ok => base,
+        other => format!("{base} [{}]", other.as_str()),
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -273,6 +378,7 @@ fn read_event_from_stdin() -> Result<ToolEvent> {
         return Ok(ToolEvent {
             tool_name: String::new(),
             tool_input: ToolInput::default(),
+            tool_response: ToolResponse::default(),
             session_id: String::new(),
             agent_id: String::new(),
         });

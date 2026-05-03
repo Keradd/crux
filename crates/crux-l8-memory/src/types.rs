@@ -161,6 +161,10 @@ pub struct RecallQuery {
     pub project_root: Option<String>,
     pub kinds: Vec<ObservationKind>,
     pub symbol: Option<String>,
+    /// When non-empty, restrict to observations whose `file_path` column
+    /// exactly matches one of the supplied values. Callers that want to
+    /// match both absolute and project-relative forms should pass both.
+    pub file_paths: Vec<String>,
     pub limit: usize,
     pub include_archived: bool,
 }

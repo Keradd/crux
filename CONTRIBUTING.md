@@ -3,6 +3,19 @@
 Thanks for your interest in CRUX. This document covers the conventions
 and the PR checklist that keep the workspace tidy and the build green.
 
+## Contents
+
+- [Code of conduct](#code-of-conduct)
+- [Getting started](#getting-started)
+- [Development workflow](#development-workflow)
+- [Workspace conventions](#workspace-conventions)
+- [Commit message conventions](#commit-message-conventions)
+- [Pull request checklist](#pull-request-checklist)
+- [Adding a new layer](#adding-a-new-layer)
+- [Filing issues](#filing-issues)
+- [Security](#security)
+- [License](#license)
+
 ## Code of conduct
 
 Be civil. Argue ideas, not people. We follow the spirit of the
@@ -10,17 +23,42 @@ Be civil. Argue ideas, not people. We follow the spirit of the
 
 ## Getting started
 
+MSRV is **Rust 1.85** (edition 2021). Rustup will pull the right
+toolchain automatically because the workspace's `rust-version` is
+pinned in `Cargo.toml`.
+
 ```bash
 git clone https://github.com/Keradd/crux.git
 cd crux
 cargo build                  # warning-free in <5s warm
-cargo test                   # 289 passing / 0 failed (default features)
-cargo test --features crux-l7-sandbox/seccomp   # 299 passing / 0 failed (Linux)
+cargo test                   # 392 passing / 0 failed (default features)
+cargo test --features crux-l7-sandbox/seccomp   # 402 passing / 0 failed (Linux)
 ```
 
 Optional Linux extras:
 - Kernel ≥ 3.5 for the `seccomp` feature.
 - `landlock` is gated by Cargo feature on `crux-l7-sandbox`.
+
+## Development workflow
+
+Typical contributor loop:
+
+1. **Branch** — off `main`, named `feat/<slug>`, `fix/<slug>`,
+   `docs/<slug>`, or `chore/<slug>`.
+2. **Code** — keep diffs tight; favour minimal upstream fixes over
+   downstream workarounds.
+3. **Test** — write or extend tests *before* the implementation where
+   practical. New behaviour without coverage will be asked for it.
+4. **Lint** — `cargo fmt --all && cargo clippy --all-targets --all-features -- -D warnings`.
+5. **Docs** — update `README.md`, `docs/ARCHITECTURE.md`, and / or the
+   relevant crate rustdoc whenever public surface shifts.
+6. **Changelog** — append an entry under `## [Unreleased]` in
+   `CHANGELOG.md`. Group by `### Added / Changed / Fixed / Removed /
+   Docs / Tests / Planned` as the file already does.
+7. **Commit** — follow the [Conventional Commits](#commit-message-conventions)
+   convention already used in the git log.
+8. **PR** — link the issue (if any), paste the `cargo test` summary,
+   and tick the [Pull request checklist](#pull-request-checklist).
 
 ## Workspace conventions
 
@@ -64,8 +102,10 @@ These are observed patterns; please respect them when extending.
 
 ### Telemetry
 - Record events via `crux_core::telemetry::record(&conn, &Event { … })`.
-- Layer name is `"l1".."l10"` (lowercase). Feature is free-form
+- Layer name is `"l1".."l11"` (lowercase). Feature is free-form
   `"layer:detail"`.
+- Every compression step must also emit its token counters so
+  `crux audit` can attribute savings.
 
 ### Configuration
 - Project config at `<root>/.crux/config.toml` overrides global
@@ -79,23 +119,90 @@ These are observed patterns; please respect them when extending.
 - **No new dependencies without good reason.** Prefer the standard
   library or an existing workspace dep.
 
+## Commit message conventions
+
+CRUX uses [Conventional Commits](https://www.conventionalcommits.org/)
+— same pattern you'll see in `git log`:
+
+```
+<type>(<scope>): <short summary, imperative mood>
+
+<optional body wrapped to ~72 cols>
+
+<optional footer, e.g. Fixes #42 / BREAKING CHANGE: …>
+```
+
+- `<type>` is one of **`feat`**, **`fix`**, **`docs`**, **`test`**,
+  **`refactor`**, **`perf`**, **`chore`**, **`ci`**, **`build`**,
+  **`revert`**, **`release`**.
+- `<scope>` is usually a crate or layer: `l4`, `l11-digest`,
+  `crux-mcp`, `ci`, `changelog`, `install.sh`, … Skip the scope for
+  cross-cutting chores.
+- Keep the summary under **72 characters**, lower-case except for
+  proper nouns.
+- Breaking changes get both a `!` after the type and a
+  `BREAKING CHANGE:` footer.
+
+Examples pulled from history:
+
+```
+feat(v0.2.0): crux setup 8 agents + init bootstrap chain + one-shot installer
+fix(l7-sandbox): cross-libc rlimit type alias
+fix(ci): green up matrix on Rust 1.95 + Windows + 1.85 MSRV
+docs(changelog): finalize v0.2.0 — 8 agents, init chain, one-shot installer
+release: v0.1.1 — fix L7 Python on Windows + musl cross-build
+```
+
 ## Pull request checklist
 
 Before opening a PR, please verify each of the following:
 
 - [ ] `cargo fmt --all` is clean.
 - [ ] `cargo clippy --all-targets --all-features -- -D warnings` is clean.
-- [ ] `cargo test` passes (`cargo test --features crux-l7-sandbox/seccomp`
+- [ ] `cargo test --workspace` passes
+      (`cargo test --workspace --features crux-l7-sandbox/seccomp`
       on Linux if you touched L7).
 - [ ] New behaviour is covered by tests.
-- [ ] Public APIs include doc comments.
+- [ ] Public APIs include doc comments; any new CLI flag is documented
+      in `--help` output (clap `#[arg(help = …)]`).
 - [ ] If you added or changed a migration, the schema is documented in
-      `docs/ARCHITECTURE.md` and the migration is appended (not edited
-      in place).
+      `docs/ARCHITECTURE.md` §5 and the migration is appended (not
+      edited in place).
 - [ ] If you added a new CLI command or MCP tool, it is reflected in
-      `README.md` and `CHANGELOG.md`.
+      `README.md`, `docs/ARCHITECTURE.md` §8/§9, and `CHANGELOG.md`.
 - [ ] If you added a new layer or sub-stage, `CHANGELOG.md` (under
-      `[Unreleased]`) reflects it.
+      `[Unreleased]`) reflects it and the [Adding a new layer](#adding-a-new-layer)
+      checklist is satisfied.
+- [ ] Commits follow the [Conventional Commits](#commit-message-conventions)
+      convention.
+
+## Adding a new layer
+
+CRUX's power comes from its cross-layer integration, so a new layer
+touches more places than a new flag. When you introduce `Lx`:
+
+- [ ] Create `crates/crux-lx-<slug>/` with the standard `lib.rs` +
+      `types.rs` + `engine.rs` split (mirror `crux-l11-digest` for the
+      newest reference implementation).
+- [ ] Add the crate to the workspace `members` list in the root
+      `Cargo.toml` and wire it into `[workspace.dependencies]`.
+- [ ] If the layer needs persistence, add a new numbered migration
+      under `crates/crux-core/migrations/` and append it to the
+      `MIGRATIONS` array in `crates/crux-core/src/db.rs`. Never edit
+      a shipped migration.
+- [ ] Expose a toggle in `crates/crux-core/src/config.rs` under
+      `[layer.lx]` with sensible defaults; surface the toggle in
+      `crux audit` / `crux_audit`.
+- [ ] Add CLI subcommands under `crates/crux-cli/src/commands/` and MCP
+      tools in `crates/crux-mcp/src/{tools.rs,dispatch.rs}`.
+- [ ] Update `README.md` (Why-CRUX row, MCP tools table, workspace
+      tree), `docs/ARCHITECTURE.md` (§3 diagram, §4 workspace, §7
+      per-layer section, §8 MCP tools, §11 roadmap, §14.1 security
+      row), and `CHANGELOG.md` under `[Unreleased]`.
+- [ ] Teach `crux-l9-coach` about the new layer (`unused_layers` and
+      the "Few layers active" threshold).
+- [ ] Add crate-level tests; aim for the same density as the existing
+      layer crates.
 
 ## Filing issues
 
@@ -107,6 +214,28 @@ When filing a bug report, please include:
 
 For feature requests, please describe the use case rather than the
 proposed implementation; the maintainers will help find the cleanest fit.
+
+## Security
+
+CRUX handles local code, credentials, and AI-agent tool output, so
+security regressions matter. Please do **not** file public issues for
+suspected vulnerabilities. Instead:
+
+1. Open a [private security advisory](https://github.com/Keradd/crux/security/advisories/new)
+   on GitHub, or
+2. Email the maintainers with a minimal reproduction and, if possible,
+   a suggested patch.
+
+The areas most worth scrutinising:
+
+- L3 filter rules that might drop errors, credentials, or warnings
+  (see `docs/ARCHITECTURE.md` §13.2 "Quality preservation").
+- L7 sandbox escape paths — rlimits, landlock, seccomp allowlists.
+- L4 read-cache serving a stale slice after an on-disk change.
+- MCP stdio server parsing untrusted JSON-RPC frames.
+
+The expected response time is **3 working days** for an acknowledgement
+and a plan. CVEs will be coordinated through GitHub's advisory flow.
 
 ## License
 

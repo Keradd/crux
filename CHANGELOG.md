@@ -7,6 +7,97 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Layer 11 — conversation digest** (`crux-l11-digest`). Records every
+  tool call as a `turn_event` and rolls them up into compact
+  `turn_digests` so long sessions stop hoarding historical noise in
+  the model's context window.
+  - New SQLite migration `010_turn_log.sql` (`turn_events` +
+    `turn_digests`, both session-scoped, both project-tagged).
+  - New CLI: `crux digest [--session=…] [--pending] [--history --limit N]`
+    and `crux compact [--session=…]`.
+  - New MCP tools: `crux_digest` (render latest rollup + still-pending
+    events) and `crux_compact` (force-roll the pending queue, optionally
+    mirror the digest into L8 as a `convention` observation).
+  - `crux hook post-tool` extended to seed a `turn_event` for every
+    `Edit` / `Write` / `Read` / `Bash` / MCP call it sees.
+  - **Dispatch-level MCP auto-record**: every non-digest `tools/call`
+    inside `crux mcp` also seeds a `turn_event`, so agents driving
+    CRUX through MCP only (Cursor, Windsurf default) get conversation
+    digests without needing PreToolUse/PostToolUse hooks. The digest
+    tools themselves skip self-recording.
+  - New `[layer.l11]` config block:
+    `auto_compact_every_n` (default 50), `max_summary_tokens`
+    (600), `mirror_to_l8` (true), `mirror_importance` (4),
+    `render_max_events` (200).
+  - Renderer is fully deterministic Rust — buckets reads/edits by file,
+    bash by first-word, searches by query — no LLM round-trip.
+  - 14 unit tests in `crux-l11-digest`; 5 dispatch-level tests in
+    `crux-mcp`. `crux_audit` + `crux audit` now surface the
+    `l11_digest` toggle.
+- L9 Coach now treats CRUX as 11 layers when computing `unused_layers`
+  and the "Few layers active" pattern threshold.
+- **L6 `crux_search` lean-shape revamp.** The MCP search tool now
+  returns a flat per-hit object (`id` / `kind` / `file` / `lines` /
+  `title` / `snippet` / `score`) instead of the previous
+  `{chunk: {...}, ranks: {...}}` envelope. Three behavior changes
+  worth flagging:
+  - **Line-aware default snippet** for code/symbol chunks. Replaces the
+    legacy ~80-char text window with the matched line plus
+    `view_lines` (default 3) lines on either side, with the matched
+    line prefixed by `> `. Saves the agent's follow-up `crux_read` /
+    `crux_get_symbol_source` call when the snippet is enough.
+  - **`symbol` enrichment**: when a chunk has a `source_id` linked to
+    `ast_nodes` (any L5-derived chunk), the dispatcher joins to fetch
+    the qualified_name and surfaces it as `symbol`. Lets agents chain
+    directly into `crux_get_symbol_source` without parsing the file
+    path.
+  - **Metadata pruning**: `ranks`, `tokens_est`, `source_id`,
+    `language`, and the unrounded raw score moved behind `debug=true`.
+    Default payload is ~30% leaner per result.
+  - New args: `view: "compact" | "default" | "full"` (default
+    `default`); `view_lines: 0..=20` (default 3); `debug: bool`
+    (default false). `view=compact` keeps the legacy 80-char shape;
+    `view=full` returns the entire chunk content so agents can skip
+    follow-up reads when they want.
+
+### Docs
+
+- `README.md`: eleven-layer phrasing, L11 row in the "Why CRUX"
+  table, `crux-l11-digest` in the workspace tree, thirteen MCP tools
+  (adding `crux_digest` / `crux_compact`), new L11 quick-start block,
+  refreshed test badge + Testing section counts, compact in-page TOC,
+  dedicated **Privacy & telemetry** section, MSRV + fmt/clippy/test
+  commands in Testing, and SPDX-style license footer.
+- `docs/ARCHITECTURE.md`: eleven-layer tagline + high-level
+  diagram, `crux-l11-digest` added to the workspace crate list,
+  MCP server advertised as 13 tools, new Phase 11 roadmap entry,
+  status line flipped to "All 11 layers shipped", new L11 row
+  in the §14.1 security table, navigable top-level **Contents** list,
+  and §16 split into *Resolved design decisions* (table) +
+  *Still open* questions so answered items stop masquerading as open.
+- `CONTRIBUTING.md`: Contents index, MSRV note, **Development
+  workflow** section, **Commit message conventions** section
+  (Conventional Commits, matches actual git history), expanded PR
+  checklist (adds `cargo clippy`, `--help` docs, migration schema,
+  commit-convention tick), new **Adding a new layer** checklist,
+  new **Security** section with private-advisory flow + high-value
+  audit surface, and telemetry layer range corrected to `l1..l11`.
+- `CHANGELOG.md`: ISO release dates (`2026-05-03`) added to `[0.1.0]`,
+  `[0.1.1]`, and `[0.2.0]` headers per Keep-a-Changelog convention.
+
+### Tests
+
+- **392 pass / 0 fail** on the default feature set (+60 over the
+  v0.2.0 baseline of 332). **402 pass / 0 fail** with
+  `--features crux-l7-sandbox/seccomp` on Linux. New coverage:
+  14 unit tests in `crux-l11-digest` (turn-event record + rollup
+  + renderer buckets), 5 dispatch-level tests in `crux-mcp`
+  (auto-record + digest tool self-skip), and 6 new `crux_search`
+  dispatch tests pinning the lean-shape + line-aware snippet +
+  symbol enrichment + `view` / `debug` flag behavior.
+
 ### Planned
 
 - mdBook documentation chapters.
@@ -14,7 +105,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Homebrew tap.
 - Criterion benchmarks for L1 / L2 / L3 / L7 / L8 / L9 (currently L4 / L5 / L6 only).
 
-## [0.2.0] — Agent integration setup
+## [0.2.0] — 2026-05-03 — Agent integration setup
 
 ### Added
 
@@ -90,7 +181,7 @@ radius, hybrid search, sandbox execution, persistent memory, …).
   parse aliases + per-agent `integrate` E2E + dry-run + force +
   `--env CRUX_PROJECT` preservation.
 
-## [0.1.1] — Patch release
+## [0.1.1] — 2026-05-03 — Patch release
 
 ### Fixed
 
@@ -121,7 +212,7 @@ radius, hybrid search, sandbox execution, persistent memory, …).
   aarch64, and Windows x86_64; each archive is published with a
   `.sha256` checksum to the GitHub Releases page.
 
-## [0.1.0] — Initial release
+## [0.1.0] — 2026-05-03 — Initial release
 
 First public release of CRUX. All ten layers ship with end-to-end coverage.
 

@@ -67,6 +67,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "ast_file_signatures",
         sql: include_str!("../migrations/009_ast_file_signatures.sql"),
     },
+    Migration {
+        version: 10,
+        name: "turn_log",
+        sql: include_str!("../migrations/010_turn_log.sql"),
+    },
 ];
 
 /// Open the database at `path` (creating parent dirs and the file as

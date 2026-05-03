@@ -75,11 +75,20 @@ pub struct LayerToggles {
     pub l4_read_cache: bool,
     pub l5_ast_graph: bool,
     pub l6_hybrid_search: bool,
-    /// Sandbox is opt-in due to security implications.
+    /// Sandbox on-by-default as of 2026-05-03. The default isolation
+    /// level is `IsolationLevel::Portable` (subprocess + timeout +
+    /// `network_allowed=false` + project-root-only fs) which is safe
+    /// without any system-level dependency. Users who want stronger
+    /// isolation compile `crux-l7-sandbox` with the `seccomp` feature
+    /// and pass `"isolation":"hard"` per-call.
     pub l7_sandbox: bool,
     pub l8_memory: bool,
     pub l9_coach: bool,
     pub l10_setup: bool,
+    /// Layer 11 — conversation digest. Records every tool call as a
+    /// `turn_event` and rolls them up into compact `turn_digests` so
+    /// long sessions don't drag historical noise into context.
+    pub l11_digest: bool,
 }
 
 impl Default for LayerToggles {
@@ -91,10 +100,11 @@ impl Default for LayerToggles {
             l4_read_cache: true,
             l5_ast_graph: true,
             l6_hybrid_search: true,
-            l7_sandbox: false,
+            l7_sandbox: true,
             l8_memory: true,
             l9_coach: true,
             l10_setup: true,
+            l11_digest: true,
         }
     }
 }
@@ -137,6 +147,7 @@ pub struct LayerConfigs {
     pub l7: L7Config,
     pub l8: L8Config,
     pub l9: L9Config,
+    pub l11: L11Config,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -164,6 +175,13 @@ pub struct L4Config {
     pub delta_max_lines: u64,
     pub cache_max_entries: u64,
     pub contextignore_max_patterns: u64,
+    /// Threshold in lines above which a full-file read auto-falls back
+    /// to an L5 outline (symbol list + line ranges) instead of the
+    /// whole body. `0` disables the behavior. Only fires when the
+    /// caller asks for the full file (no offset/limit/symbol) AND the
+    /// L5 graph has indexed at least one symbol for the file. Agents
+    /// can opt out per-call via `force_full = true`.
+    pub outline_above_lines: u64,
 }
 
 impl Default for L4Config {
@@ -173,6 +191,7 @@ impl Default for L4Config {
             delta_max_lines: 2000,
             cache_max_entries: 500,
             contextignore_max_patterns: 200,
+            outline_above_lines: 1000,
         }
     }
 }
@@ -269,6 +288,13 @@ pub struct L8Config {
     pub auto_extract: bool,
     pub decay_check_interval_hours: u64,
     pub contradiction_check: bool,
+    /// When true, `crux_read` / `crux_get_symbol_source` append a short
+    /// footer listing past observations attached to the file/symbol they
+    /// return. Zero new tool calls; pure context injection.
+    pub auto_surface: bool,
+    /// Cap on observations surfaced per call. Keep small (≤ 5) so the
+    /// footer never dominates the payload.
+    pub auto_surface_limit: usize,
 }
 
 impl Default for L8Config {
@@ -277,6 +303,8 @@ impl Default for L8Config {
             auto_extract: true,
             decay_check_interval_hours: 24,
             contradiction_check: true,
+            auto_surface: true,
+            auto_surface_limit: 3,
         }
     }
 }
@@ -297,6 +325,35 @@ impl Default for L9Config {
             nudge_threshold_drop: 15,
             nudge_cooldown_minutes: 5,
             nudge_max_per_session: 3,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct L11Config {
+    /// Auto-compact a session after this many pending events. `0`
+    /// disables auto-compaction; manual `crux compact` still works.
+    pub auto_compact_every_n: u32,
+    /// Soft cap on summary tokens written into a digest row.
+    pub max_summary_tokens: u32,
+    /// When true, every compaction also writes the digest summary
+    /// into the L8 `observations` table as a `convention` row.
+    pub mirror_to_l8: bool,
+    /// Importance assigned to mirrored observations (1..=10).
+    pub mirror_importance: u8,
+    /// Cap on events read in a single `summarize` call.
+    pub render_max_events: u32,
+}
+
+impl Default for L11Config {
+    fn default() -> Self {
+        Self {
+            auto_compact_every_n: 50,
+            max_summary_tokens: 600,
+            mirror_to_l8: true,
+            mirror_importance: 4,
+            render_max_events: 200,
         }
     }
 }
@@ -469,6 +526,8 @@ mod tests {
 
     #[test]
     fn project_overrides_global() {
+        // Project config explicitly disables L7 — this must win over the
+        // default-on state.
         let dir = tempfile::tempdir().unwrap();
         let proj = dir.path();
         let proj_cfg_path = proj.join(".crux").join("config.toml");
@@ -476,14 +535,27 @@ mod tests {
         std::fs::write(
             &proj_cfg_path,
             r#"[layers]
-l7_sandbox = true
+l7_sandbox = false
 "#,
         )
         .unwrap();
 
         let loaded = load(Some(proj)).unwrap();
-        assert!(loaded.config.layers.l7_sandbox);
+        assert!(
+            !loaded.config.layers.l7_sandbox,
+            "project override did not take effect"
+        );
         assert!(loaded.config.layers.l4_read_cache); // default preserved
+    }
+
+    #[test]
+    fn l7_sandbox_is_enabled_by_default() {
+        let t = LayerToggles::default();
+        assert!(
+            t.l7_sandbox,
+            "L7 sandbox must default to enabled (portable isolation, no system deps) \
+             so crux_execute is usable out-of-the-box."
+        );
     }
 
     #[test]

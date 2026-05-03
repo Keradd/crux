@@ -473,6 +473,7 @@ dependencies = [
  "clap",
  "crux-core",
  "crux-l10-setup",
+ "crux-l11-digest",
  "crux-l3-bash",
  "crux-l4-readcache",
  "crux-l5-ast",
@@ -519,6 +520,20 @@ dependencies = [
  "serde_yaml",
  "tempfile",
  "toml",
+ "tracing",
+]
+
+[[package]]
+name = "crux-l11-digest"
+version = "0.2.0"
+dependencies = [
+ "chrono",
+ "crux-core",
+ "crux-l8-memory",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
  "tracing",
 ]
 
@@ -645,6 +660,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "crux-core",
+ "crux-l11-digest",
  "crux-l3-bash",
  "crux-l4-readcache",
  "crux-l5-ast",

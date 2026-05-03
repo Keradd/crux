@@ -203,6 +203,46 @@ impl<'c> GraphStore<'c> {
         Ok(rows)
     }
 
+    /// Return every node anchored at `file_path` ordered by
+    /// `line_start`. Used by the L4+L5 outline-first auto-mode in
+    /// `crux_read`: when a full-file read is requested for a file
+    /// larger than `[layer.l4] outline_above_lines`, the dispatcher
+    /// pulls the symbol list here and returns it instead of the body.
+    /// `limit` caps the number of rows returned (the outline format
+    /// already truncates display, but we cap at the source so the
+    /// SQLite query stays cheap on huge generated files).
+    pub fn list_symbols_in_file(
+        &self,
+        project_root: &str,
+        file_path: &str,
+        limit: usize,
+    ) -> Result<Vec<GraphNode>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, project_root, kind, name, qualified_name, file_path,
+                    line_start, line_end, language, parent_qn, signature, is_test
+             FROM ast_nodes
+             WHERE project_root = ? AND file_path = ?
+             ORDER BY line_start, line_end LIMIT ?",
+        )?;
+        let rows = stmt
+            .query_map(params![project_root, file_path, limit as i64], map_node)?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(rows)
+    }
+
+    /// Cheap `COUNT(*)` helper — pairs with [`Self::list_symbols_in_file`]
+    /// when the caller capped `limit` and needs to know the true total
+    /// (e.g. the outline header reports "250 symbols, showing 200").
+    pub fn count_symbols_in_file(&self, project_root: &str, file_path: &str) -> Result<u64> {
+        let n: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM ast_nodes
+             WHERE project_root = ? AND file_path = ?",
+            params![project_root, file_path],
+            |row| row.get(0),
+        )?;
+        Ok(n.max(0) as u64)
+    }
+
     pub fn get_by_qn(&self, project_root: &str, qn: &str) -> Result<Option<GraphNode>> {
         let row = self
             .conn

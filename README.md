@@ -2,18 +2,25 @@
 
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 [![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org)
-[![Tests](https://img.shields.io/badge/tests-289%20passing-brightgreen.svg)](#testing)
+[![Tests](https://img.shields.io/badge/tests-392%20passing-brightgreen.svg)](#testing)
 [![CI](https://github.com/Keradd/crux/actions/workflows/ci.yml/badge.svg)](https://github.com/Keradd/crux/actions/workflows/ci.yml)
 
 > **Compression Runtime for Universal eXecution.**
-> One Rust binary. One SQLite database. Ten layers. Local-first. Zero telemetry.
+> One Rust binary. One SQLite database. Eleven layers. Local-first. Zero telemetry.
 
 CRUX is a token-optimization runtime that sits between an AI coding agent
 (Claude Code, Cursor, Cline, Continue, Aider, …) and the agent's tools
 (Read, Edit, Bash, MCP servers). It reduces token usage by 60–95 % across
 real workloads without degrading task quality, by attacking every layer
 where tokens are wasted: prose verbosity, tool-call bloat, redundant file
-reads, missing structure, lost context, and quality decay.
+reads, missing structure, lost context, conversation history bloat, and
+quality decay.
+
+**Contents** — [Why CRUX](#why-crux) · [Install](#install) ·
+[Activate](#activate-inside-your-ai-agent) · [Quick start](#quick-start) ·
+[MCP tools](#mcp-tools) · [Workspace](#workspace-layout) ·
+[Privacy](#privacy--telemetry) · [Testing](#testing) ·
+[Documentation](#documentation) · [License](#license)
 
 ---
 
@@ -31,8 +38,11 @@ reads, missing structure, lost context, and quality decay.
 | Lost context across sessions | **L8** memory | FTS5 + decay-ranked observations |
 | Quality / loop drift | **L9** coach | Score, loop detect, CLAUDE.md drift |
 | Inconsistent project setup | **L10** setup | `crux init` scaffold + profile templates |
+| Long-session history bloat | **L11** digest | Deterministic turn-event rollup (per-file reads/edits, bash first-word, search query buckets) + optional L8 mirror |
 
-All ten layers are independent and opt-in via TOML.
+All eleven layers are independent and opt-in via TOML. Flip any subset
+(`[layer.l3] enabled = false`, etc.) without rebuilding — the binary ships
+every layer; the config decides which ones run.
 
 ---
 
@@ -127,9 +137,9 @@ Use `--scope project` to write per-project configs instead of per-user, and
 `--no-hooks` / `--no-skill` to opt out of the Claude Code extras.
 
 After setup, restart your agent (or run `claude mcp list` for Claude Code)
-and the eleven CRUX MCP tools will be available — `crux_search`,
+and the thirteen CRUX MCP tools will be available — `crux_search`,
 `crux_find_symbol`, `crux_impact`, `crux_remember`, `crux_recall`,
-`crux_read`, `crux_execute`, and friends.
+`crux_read`, `crux_execute`, `crux_digest`, `crux_compact`, and friends.
 
 ---
 
@@ -172,7 +182,13 @@ crux recall Pinia
 crux audit
 crux coach drift
 
-# MCP server (11 tools, stdio JSON-RPC)
+# L11 — conversation digest (compact turn-event rollups for long sessions)
+crux digest                      # latest rollup + pending events
+crux digest --pending            # only the un-rolled queue
+crux digest --history --limit 5  # last five rollups
+crux compact                     # force-roll pending into a single digest
+
+# MCP server (13 tools, stdio JSON-RPC)
 crux mcp
 crux mcp-shrink npx @modelcontextprotocol/server-filesystem /some/path
 ```
@@ -195,8 +211,26 @@ the following tools:
 | `crux_audit` | L9 | Health snapshot + telemetry summary |
 | `crux_find_symbol` / `crux_get_symbol_source` | L5 | Symbol lookup |
 | `crux_query_graph` / `crux_impact` | L5 | Callers / callees / blast radius |
-| `crux_search` | L6 | Hybrid BM25 + dense + RRF over indexed chunks |
+| `crux_search` | L6 | Hybrid BM25 + dense + RRF (line-aware snippets + symbol enrichment) |
 | `crux_execute` | L7 | Run python / bash / node snippets in the sandbox |
+| `crux_digest` / `crux_compact` | L11 | Render / force-roll conversation turn digests |
+
+---
+
+## Privacy & telemetry
+
+CRUX is **local-first**. There is no cloud backend, no analytics pixel, no
+update ping. All telemetry is recorded in the local SQLite database at
+`$CRUX_HOME/db/crux.sqlite` (default `~/.crux/db/crux.sqlite`, mode `0600`)
+and exposed only through `crux audit` / `crux stats` / the `crux_audit`
+MCP tool. The daemon binds to `127.0.0.1` (never `0.0.0.0`); the MCP
+server defaults to stdio. No network calls happen unless you explicitly
+opt in to a cloud-backed embedder or enable a remote MCP transport.
+
+Secrets handling is detailed in `docs/ARCHITECTURE.md` §14.2 — AWS /
+GitHub / Slack tokens, `Authorization: Bearer`, `*_KEY|SECRET|TOKEN=`
+patterns, and `password=` are all preserved verbatim by every compression
+stage.
 
 ---
 
@@ -215,6 +249,7 @@ crux/
 │   ├── crux-l8-memory/        # observations + decay engine + FTS5
 │   ├── crux-l9-coach/         # quality score + loop detect + drift
 │   ├── crux-l10-setup/        # `crux init` + profile templates
+│   ├── crux-l11-digest/       # turn-event rollup + deterministic renderer
 │   ├── crux-mcp/              # MCP stdio JSON-RPC server + L2 shrinker
 │   └── crux-cli/              # `crux` binary (clap-based CLI)
 ├── docs/
@@ -240,32 +275,40 @@ crux/
 
 ## Testing
 
+MSRV is **Rust 1.85**. The workspace builds warning-free with
+`-D warnings` on stable and nightly. Every crate has in-module
+`#[cfg(test)] mod tests`; nothing depends on a running agent.
+
 ```bash
-cargo test                                          # 289 passing / 0 failed
-cargo test --features crux-l7-sandbox/seccomp       # 299 passing / 0 failed (Linux)
-cargo bench                                         # criterion benchmarks (L4, L5, L6)
+cargo fmt --all -- --check                          # style
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --workspace                              # 392 passing / 0 failed
+cargo test --workspace --features crux-l7-sandbox/seccomp
+                                                    # 402 passing / 0 failed (Linux)
+cargo bench                                         # criterion (L4 / L5 / L6)
 ```
 
 Inline TOML goldens for L3 filters live in
-`crates/crux-l3-bash/filters/*.toml` under `[[tests]]` and run via the
-standard `cargo test` invocation.
+`crates/crux-l3-bash/filters/*.toml` under `[[tests]]` and execute via
+the standard `cargo test` invocation — no separate harness needed.
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full PR checklist
+(fmt + clippy + tests + docs + migration rules + commit conventions).
 
 ---
 
 ## License
 
-Dual-licensed under either of
+Licensed under `MIT OR Apache-2.0` at your option:
 
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or
-  <http://www.apache.org/licenses/LICENSE-2.0>)
-- MIT license ([LICENSE-MIT](LICENSE-MIT) or
-  <http://opensource.org/licenses/MIT>)
-
-at your option.
+- Apache License, Version 2.0 — [`LICENSE-APACHE`](LICENSE-APACHE) or
+  <https://www.apache.org/licenses/LICENSE-2.0>
+- MIT — [`LICENSE-MIT`](LICENSE-MIT) or
+  <https://opensource.org/licenses/MIT>
 
 ### Contribution
 
 Unless you explicitly state otherwise, any contribution intentionally
-submitted for inclusion in the work by you, as defined in the
-Apache-2.0 license, shall be dual-licensed as above, without any
-additional terms or conditions.
+submitted for inclusion in CRUX by you, as defined in the Apache-2.0
+license, shall be dual-licensed as above, without any additional terms
+or conditions.

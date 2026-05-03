@@ -125,6 +125,13 @@ impl<'c> MemoryEngine<'c> {
                 params_vec.push(k.as_str().to_string().into());
             }
         }
+        if !q.file_paths.is_empty() {
+            let placeholders: Vec<&str> = q.file_paths.iter().map(|_| "?").collect();
+            where_clauses.push(format!("o.file_path IN ({})", placeholders.join(",")));
+            for p in &q.file_paths {
+                params_vec.push(p.clone().into());
+            }
+        }
         if q.include_archived {
             // Replace the first clause we added.
             where_clauses[0] = "1=1".into();
@@ -198,6 +205,60 @@ impl<'c> MemoryEngine<'c> {
             .query_map(params![project_root, limit as i64], obs_from_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // passive auto-surface helpers
+    //
+    // These exist for the MCP `crux_read` / `crux_get_symbol_source`
+    // dispatchers: every time the agent reads a file or fetches symbol
+    // source, CRUX injects a short footer listing past observations
+    // attached to that file / symbol. Same decay-aware ranking as
+    // `recall`, but without an FTS query.
+    // ─────────────────────────────────────────────────────────────────
+
+    /// Return top-N active observations whose `file_path` matches one of
+    /// `path_variants`. Pass both absolute and project-relative forms so
+    /// we catch observations stored in either shape. Empty query, decay
+    /// re-ranked. Touches (bumps access) the surfaced rows.
+    pub fn recall_by_file(
+        &self,
+        project_root: &str,
+        path_variants: &[&str],
+        limit: usize,
+    ) -> Result<Vec<RankedObservation>> {
+        if path_variants.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let q = RecallQuery {
+            query: String::new(),
+            project_root: Some(project_root.to_string()),
+            file_paths: path_variants.iter().map(|s| s.to_string()).collect(),
+            limit,
+            ..Default::default()
+        };
+        self.recall(&q)
+    }
+
+    /// Return top-N active observations whose `symbol` column exactly
+    /// matches `qualified_name`. Empty query, decay re-ranked.
+    pub fn recall_by_symbol(
+        &self,
+        project_root: &str,
+        qualified_name: &str,
+        limit: usize,
+    ) -> Result<Vec<RankedObservation>> {
+        if qualified_name.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let q = RecallQuery {
+            query: String::new(),
+            project_root: Some(project_root.to_string()),
+            symbol: Some(qualified_name.to_string()),
+            limit,
+            ..Default::default()
+        };
+        self.recall(&q)
     }
 
     /// Run periodic decay maintenance: drop relevance below floor for each
@@ -595,5 +656,191 @@ mod tests {
         };
         let r = mem.recall(&q).unwrap();
         assert!(r.is_empty());
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // passive auto-surface: recall_by_file / recall_by_symbol
+    // ─────────────────────────────────────────────────────────────────
+
+    fn obs_with_file(
+        kind: ObservationKind,
+        title: &str,
+        content: &str,
+        file_path: &str,
+    ) -> NewObservation {
+        let mut o = NewObservation::minimal("/p", kind, title, content);
+        o.file_path = Some(file_path.into());
+        o
+    }
+
+    fn obs_with_symbol(
+        kind: ObservationKind,
+        title: &str,
+        content: &str,
+        symbol: &str,
+    ) -> NewObservation {
+        let mut o = NewObservation::minimal("/p", kind, title, content);
+        o.symbol = Some(symbol.into());
+        o
+    }
+
+    #[test]
+    fn recall_by_file_matches_exact_path() {
+        let conn = fixture();
+        let mem = engine_with(&conn);
+        mem.remember(obs_with_file(
+            ObservationKind::Decision,
+            "zstd level",
+            "zstd=3 balances speed/ratio",
+            "src/cache.rs",
+        ))
+        .unwrap();
+        mem.remember(obs_with_file(
+            ObservationKind::Convention,
+            "other file obs",
+            "unrelated",
+            "src/other.rs",
+        ))
+        .unwrap();
+
+        let hits = mem.recall_by_file("/p", &["src/cache.rs"], 5).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].observation.title, "zstd level");
+    }
+
+    #[test]
+    fn recall_by_file_matches_any_of_variants() {
+        let conn = fixture();
+        let mem = engine_with(&conn);
+        mem.remember(obs_with_file(
+            ObservationKind::ErrorPattern,
+            "stored with absolute path",
+            "detail",
+            "/home/x/proj/src/lib.rs",
+        ))
+        .unwrap();
+        mem.remember(obs_with_file(
+            ObservationKind::Decision,
+            "stored with relative path",
+            "detail",
+            "src/lib.rs",
+        ))
+        .unwrap();
+
+        // Caller passes both variants; both obs should surface.
+        let hits = mem
+            .recall_by_file("/p", &["/home/x/proj/src/lib.rs", "src/lib.rs"], 10)
+            .unwrap();
+        assert_eq!(hits.len(), 2);
+    }
+
+    #[test]
+    fn recall_by_file_respects_limit_and_importance() {
+        let conn = fixture();
+        let mem = engine_with(&conn);
+        let mut hi = obs_with_file(
+            ObservationKind::Guardrail,
+            "hi-importance",
+            "never compress this file",
+            "src/auth.rs",
+        );
+        hi.importance = 9;
+        let mut lo = obs_with_file(
+            ObservationKind::Reference,
+            "lo-importance",
+            "see docs",
+            "src/auth.rs",
+        );
+        lo.importance = 2;
+        mem.remember(lo).unwrap();
+        mem.remember(hi).unwrap();
+
+        let hits = mem.recall_by_file("/p", &["src/auth.rs"], 1).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].observation.title, "hi-importance");
+    }
+
+    #[test]
+    fn recall_by_file_empty_inputs_return_empty() {
+        let conn = fixture();
+        let mem = engine_with(&conn);
+        assert!(mem.recall_by_file("/p", &[], 3).unwrap().is_empty());
+        assert!(mem
+            .recall_by_file("/p", &["src/x.rs"], 0)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn recall_by_file_skips_archived() {
+        let conn = fixture();
+        let mem = engine_with(&conn);
+        let id = mem
+            .remember(obs_with_file(
+                ObservationKind::Project,
+                "outdated",
+                "stale note",
+                "src/old.rs",
+            ))
+            .unwrap();
+        mem.archive(id).unwrap();
+        assert!(mem
+            .recall_by_file("/p", &["src/old.rs"], 3)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn recall_by_file_scopes_to_project() {
+        let conn = fixture();
+        let mem = engine_with(&conn);
+        // Project A
+        mem.remember(obs_with_file(
+            ObservationKind::Decision,
+            "proj-a obs",
+            "a",
+            "src/x.rs",
+        ))
+        .unwrap();
+        // Project B — same file path, different project_root
+        let mut b = obs_with_file(ObservationKind::Decision, "proj-b obs", "b", "src/x.rs");
+        b.project_root = "/q".into();
+        mem.remember(b).unwrap();
+
+        let hits = mem.recall_by_file("/p", &["src/x.rs"], 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].observation.title, "proj-a obs");
+    }
+
+    #[test]
+    fn recall_by_symbol_matches_qualified_name() {
+        let conn = fixture();
+        let mem = engine_with(&conn);
+        mem.remember(obs_with_symbol(
+            ObservationKind::Decision,
+            "chose rayon",
+            "parallel iter for perf",
+            "demo::worker::run",
+        ))
+        .unwrap();
+        mem.remember(obs_with_symbol(
+            ObservationKind::Convention,
+            "other symbol",
+            "unrelated",
+            "demo::other::fn",
+        ))
+        .unwrap();
+
+        let hits = mem.recall_by_symbol("/p", "demo::worker::run", 5).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].observation.title, "chose rayon");
+    }
+
+    #[test]
+    fn recall_by_symbol_empty_inputs_return_empty() {
+        let conn = fixture();
+        let mem = engine_with(&conn);
+        assert!(mem.recall_by_symbol("/p", "", 3).unwrap().is_empty());
+        assert!(mem.recall_by_symbol("/p", "x::y", 0).unwrap().is_empty());
     }
 }

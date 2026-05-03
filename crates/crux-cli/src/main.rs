@@ -129,6 +129,12 @@ enum Cmd {
     /// Register CRUX as an MCP server (and hooks where supported)
     /// in third-party AI agents (Claude Code, Cursor, Windsurf, etc.).
     Setup(commands::setup::Args),
+
+    /// Render the conversation digest for a session (Layer 11).
+    Digest(commands::digest::DigestArgs),
+
+    /// Force-compact pending turn events into a digest row (Layer 11).
+    Compact(commands::digest::CompactArgs),
 }
 
 fn main() -> ExitCode {
@@ -174,5 +180,7 @@ fn dispatch(cli: &Cli) -> anyhow::Result<()> {
         Cmd::Search(a) => commands::search::run_search(cli, a),
         Cmd::Execute(a) => commands::execute::run(cli, a),
         Cmd::Setup(a) => commands::setup::run(cli, a),
+        Cmd::Digest(a) => commands::digest::run_digest(cli, a),
+        Cmd::Compact(a) => commands::digest::run_compact(cli, a),
     }
 }

@@ -6,6 +6,7 @@ pub mod audit;
 pub mod bash;
 pub mod coach;
 pub mod config;
+pub mod digest;
 pub mod doctor;
 pub mod execute;
 pub mod hook;

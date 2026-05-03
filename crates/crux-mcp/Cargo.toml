@@ -15,6 +15,7 @@ crux-l5-ast.workspace = true
 crux-l6-search.workspace = true
 crux-l7-sandbox.workspace = true
 crux-l8-memory.workspace = true
+crux-l11-digest.workspace = true
 
 serde.workspace = true
 serde_json.workspace = true

@@ -1,8 +1,31 @@
 # CRUX — Architecture Design
 
-**Tagline:** *One Rust binary. One SQLite DB. Ten layers. Local-first.*
+**Tagline:** *One Rust binary. One SQLite DB. Eleven layers. Local-first.*
 
 CRUX = **C**ompression **R**untime for **U**niversal e**X**ecution. Combines the best of 10 token-optimization repos into a single coherent system.
+
+**Status:** All 11 layers shipped — see [Roadmap](#11-roadmap-phased) for per-phase detail. **Last reviewed** alongside `crux` v0.2.x + L11 digest.
+
+## Contents
+
+1. [Goals & Non-Goals](#1-goals--non-goals)
+2. [Tech Stack](#2-tech-stack)
+3. [High-Level Architecture](#3-high-level-architecture)
+4. [Workspace / Crate Structure](#4-workspace--crate-structure)
+5. [Database Schema (Master)](#5-database-schema-master)
+6. [TOML Configuration](#6-toml-configuration)
+7. [Per-Layer Implementation](#7-per-layer-implementation)
+8. [MCP Server Tools](#8-mcp-server-tools)
+9. [CLI Interface](#9-cli-interface)
+10. [Hook Integration Patterns](#10-hook-integration-patterns)
+11. [Roadmap (Phased)](#11-roadmap-phased)
+12. [Testing Strategy](#12-testing-strategy)
+13. [Performance Targets](#13-performance-targets)
+14. [Security Model](#14-security-model)
+15. [Differentiators Recap](#15-differentiators-recap)
+16. [Design Decisions & Open Questions](#16-design-decisions--open-questions)
+17. [Migration & Adoption](#17-migration--adoption)
+18. [Summary](#18-summary)
 
 ---
 
@@ -105,6 +128,7 @@ Per-project view via `crux config`.
 │  │ L8: Memory (observations + decay + links)              │    │
 │  │ L9: Coach (quality score + nudges + audit)             │    │
 │  │ L10: Setup (init scaffolding + profiles)               │    │
+│  │ L11: Conversation digest (turn-event rollup)           │    │
 │  └────────────────────────────────────────────────────────┘    │
 │                                                                  │
 │  ┌────────────────────────────────────────────────────────┐    │
@@ -142,7 +166,8 @@ crux/
     ├── crux-l8-memory/       # observation CRUD + decay engine + FTS5 recall
     ├── crux-l9-coach/        # quality score + loop detect + CLAUDE.md drift
     ├── crux-l10-setup/       # crux init scaffolding + profile templates
-    ├── crux-mcp/             # MCP stdio JSON-RPC server (11 tools)
+    ├── crux-l11-digest/      # turn-event rollup + deterministic renderer
+    ├── crux-mcp/             # MCP stdio JSON-RPC server (13 tools)
     └── crux-cli/             # `crux` binary
 ```
 
@@ -492,7 +517,7 @@ l3_bash_filter = true
 l4_read_cache = true
 l5_ast_graph = true
 l6_hybrid_search = true
-l7_sandbox = false  # opt-in (security)
+l7_sandbox = true   # default-on (portable isolation, no deps)
 l8_memory = true
 l9_coach = true
 l10_setup = true
@@ -1705,10 +1730,20 @@ alias docker='crux bash docker'
 
 ### Phase 9: MCP server (2 weeks) — ✓ SHIPPED
 - [x] `crux mcp` w/ custom JSON-RPC (stdio)
-- [x] 11 tools: search, read, bash_filter, execute, remember, recall, audit, find_symbol, get_symbol_source, query_graph, impact
+- [x] 13 tools: search, read, bash_filter, execute, remember, recall, audit, find_symbol, get_symbol_source, query_graph, impact, digest, compact
 - [x] Cross-platform configs (Claude Code, Cursor, Cline, etc.)
 - [ ] TCP transport — deferred
 - [ ] Adapter generators (`crux export <target>`) — deferred
+
+### Phase 11: Layer 11 — Conversation digest — ✓ SHIPPED
+- [x] `crux-l11-digest` crate + `010_turn_log.sql` migration (`turn_events`, `turn_digests`)
+- [x] Deterministic renderer buckets reads/edits by file, bash by first word, search by query — zero LLM round-trip
+- [x] CLI: `crux digest [--session] [--pending] [--history --limit N]`, `crux compact [--session]`
+- [x] MCP tools: `crux_digest`, `crux_compact`
+- [x] `crux hook post-tool` seeds a `turn_event` for every Edit/Write/Read/Bash/MCP call
+- [x] `crux mcp` dispatcher auto-records a `turn_event` for every non-digest `tools/call` so agents driving CRUX purely through MCP (Cursor, Windsurf default) still get digests without hooks
+- [x] `[layer.l11]` config: `auto_compact_every_n` (50), `max_summary_tokens` (600), `mirror_to_l8` (true), `mirror_importance` (4), `render_max_events` (200)
+- [x] L9 Coach `unused_layers` + "Few layers active" threshold treat CRUX as 11 layers
 
 ### Phase 10: Polish (2-3 weeks) — IN PROGRESS
 - [ ] Documentation (mdBook)
@@ -1718,9 +1753,9 @@ alias docker='crux bash docker'
 - [ ] CHANGELOG, SemVer
 - [ ] Web dashboard (optional, separate crate)
 
-**Status:** All 10 layers shipped. Phase 10 polish remaining.
+**Status:** All 11 layers shipped. Phase 10 polish remaining.
 
-**Test count:** 244 pass / 0 failed across 11 implementation crates.
+**Test count:** 392 pass / 0 failed (402 with `crux-l7-sandbox/seccomp` on Linux) across 12 implementation crates.
 
 ---
 
@@ -1837,6 +1872,7 @@ CRUX MAY:
 | L8 | Memory contradiction unsurfaced | Auto-detect contradictions; surface via `crux_recall` |
 | L9 | Score gaming | Penalty for ignoring nudges (cooldown shrinks) |
 | L10 | Init overrides existing config | Refuse if files exist; require `--force` |
+| L11 | Digest drops safety-critical events | Deterministic renderer preserves per-file path + tool verb; digest never elides errors or secrets-bearing paths; `auto_compact_every_n` configurable; L8 mirror opt-in |
 
 ### 14.2 Credentials & secrets
 
@@ -1871,7 +1907,7 @@ Match in `regex` crate, applied before any compression step.
 
 CRUX vs the field:
 
-1. **Single Rust binary** — like rtk, but covers all 10 layers
+1. **Single Rust binary** — like rtk, but covers all 11 layers
 2. **Local-first by default** — like alex, but adds Layer 5-6 graph + search
 3. **Sandbox + memory + coach combined** — no other repo combines all three
 4. **TOML for everything declarative** — rtk's pattern, applied universally
@@ -1884,24 +1920,27 @@ CRUX vs the field:
 
 ---
 
-## 16. Open Questions
+## 16. Design Decisions & Open Questions
 
-1. **MCP framework choice:** `rmcp` (less mature) vs hand-rolled JSON-RPC vs Python `fastmcp` shim?
-   - **Answered:** Custom JSON-RPC (shipped in `crux-mcp`).
-2. **Embedding model size tradeoff:** BGE-small (384d, 100MB) vs BGE-base (768d, 400MB)?
-   - **Answered:** `HashEmbedder` (384d) as default, `FastEmbedder` (BGE-small-en-v1.5) opt-in via feature flag.
-3. **Tree-sitter language coverage:** start w/ 6 (Rust/Python/TS/JS/Go/Java) or expand to 12 (add Ruby/PHP/C/C++/Swift/Kotlin)?
-   - **Answered:** Started with Rust/Python/TS/JS. Go/Java deferred.
-4. **Sandbox isolation level:** subprocess-only (portable) vs landlock+seccomp (Linux-best)?
-   - **Answered:** Both shipped. `IsolationLevel::Portable` (default) + `IsolationLevel::Hard` (rlimits + landlock + seccomp).
-5. **Coach scoring:** keep alex's matrix verbatim or recalibrate based on CRUX-specific metrics?
-   - **Answered:** Adapted from alex, CRUX-specific adjustments.
-6. **Memory schema simplification:** keep token-savior's full 355 lines or trim to ~200 essential?
-   - **Answered:** Simplified to ~100 lines (9 tables, FTS5, decay config).
-7. **Distribution:** static musl binary (largest compatibility) vs dynamic glibc (smaller)?
-   - **Open:** TBD in Phase 10.
-8. **License:** MIT (permissive) vs Apache-2.0 (patent grant)?
-   - **Open:** TBD.
+### 16.1 Resolved design decisions
+
+| # | Question | Decision |
+|---|----------|----------|
+| 1 | MCP framework: `rmcp` vs hand-rolled JSON-RPC vs Python `fastmcp` shim | Hand-rolled JSON-RPC shipped in `crux-mcp` (one less C-library dependency, stdio-only is simple) |
+| 2 | Embedding model size: BGE-small (384d) vs BGE-base (768d) | `HashEmbedder` (384d) as the default; `FastEmbedder` (BGE-small-en-v1.5) opt-in via `crux-l6-search/fastembed` feature |
+| 3 | Tree-sitter language coverage at v0.1 | Ship Rust / Python / TS / JS. Go + Java deferred; Ruby / PHP / C++ / Swift / Kotlin out of scope |
+| 4 | Sandbox isolation level | Both: `IsolationLevel::Portable` (default, cross-platform subprocess + rlimits) + `IsolationLevel::Hard` (Linux-only, adds landlock + seccomp) |
+| 5 | Coach scoring matrix | Adapted from alex token-optimizer with CRUX-specific recalibration (penalty thresholds, nudge cooldowns) |
+| 6 | Memory schema size | Simplified from token-savior's 355-line schema to ~100 lines (9 tables + FTS5 + decay config) |
+| 7 | License | `MIT OR Apache-2.0` dual-license (patent grant + maximum downstream compatibility) |
+| 8 | Release distribution | Per-platform static archives on GitHub Releases (Linux gnu + musl, macOS x86_64 + aarch64, Windows x86_64). Homebrew tap + `cargo install` remain on the Phase 10 polish list |
+
+### 16.2 Still open
+
+- **mdBook hosting** — self-hosted on GitHub Pages vs docs.rs-style separate domain. Blocked on Phase 10 content freeze.
+- **Benchmark CI gating** — should regressions >5 % on L4/L5/L6 fail CI, or just be warned? Current plan: warn in CI, gate post-v1.0.
+- **Distillation engine for L8** — summarize stale observation clusters before decay archives them. Deferred until real-world corpora exist.
+- **L5 language expansion** — Go and Java remain high-demand; timeline depends on tree-sitter-go / tree-sitter-java resolver work.
 
 ---
 
@@ -1944,7 +1983,7 @@ CRUX vs the field:
 
 CRUX is the **synthesis** of 10 token-optimization repos into a single coherent Rust system. Every pattern proven elsewhere is preserved; every gap identified is filled by cross-layer integration. The result is:
 
-- **More layers** than any single repo (10 vs 1-3 typical)
+- **More layers** than any single repo (11 vs 1-3 typical)
 - **Faster** than Python/Node implementations (Rust + SQLite)
 - **Local-first** (no API keys required, but pluggable for cloud)
 - **Cross-platform** (Linux/macOS/Windows × x86_64/aarch64)

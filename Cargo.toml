@@ -10,6 +10,7 @@ members = [
     "crates/crux-l8-memory",
     "crates/crux-l9-coach",
     "crates/crux-l10-setup",
+    "crates/crux-l11-digest",
     "crates/crux-mcp",
     "crates/crux-cli",
 ]
@@ -38,6 +39,7 @@ crux-l7-sandbox = { path = "crates/crux-l7-sandbox" }
 crux-l8-memory = { path = "crates/crux-l8-memory" }
 crux-l9-coach = { path = "crates/crux-l9-coach" }
 crux-l10-setup = { path = "crates/crux-l10-setup" }
+crux-l11-digest = { path = "crates/crux-l11-digest" }
 crux-mcp = { path = "crates/crux-mcp" }
 
 # CLI

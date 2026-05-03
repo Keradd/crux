@@ -62,12 +62,14 @@ pub fn all_tools() -> Vec<ToolDefinition> {
         ),
         tool(
             "crux_read",
-            "Cache-aware file read. First read: returns the file content. Subsequent identical reads: returns a structural digest. Reads on a changed file return a line-level diff. Always preferred over the raw Read tool.",
+            "Cache-aware file read with optional range. First read: returns the requested content. Subsequent identical reads (same range): returns a structural digest. Reads on a changed file return a line-level diff. Prefer a narrow slice over the whole file — pass `offset` + `limit` for a line range, or `symbol=<qualified_name>` to slice exactly one symbol via the L5 graph. Response also includes any L8 observations attached to the file.",
             json!({
                 "type": "object",
-                "required": ["file_path"],
                 "properties": {
-                    "file_path": { "type": "string", "description": "Absolute or project-relative path." },
+                    "file_path": { "type": "string", "description": "Absolute or project-relative path. Required unless `symbol` is set." },
+                    "offset": { "type": "integer", "minimum": 0, "default": 0, "description": "1-based starting line (0 and 1 both mean top of file). Ignored when `symbol` is set." },
+                    "limit":  { "type": "integer", "minimum": 0, "default": 0, "description": "Number of lines to return (0 = to end of file). Ignored when `symbol` is set." },
+                    "symbol": { "type": "string", "description": "Optional qualified_name — resolves file + line range from the L5 AST graph, overriding file_path/offset/limit." },
                     "agent_id": { "type": "string", "default": "default" },
                     "session_id": { "type": "string", "default": "default" }
                 }
@@ -153,7 +155,7 @@ pub fn all_tools() -> Vec<ToolDefinition> {
         ),
         tool(
             "crux_search",
-            "Hybrid search across the indexed chunk store: BM25 (porter + trigram FTS5) + dense vector ranker fused via RRF. Run `crux reindex` once to populate the chunk store. Optional `kinds` filters by chunk type (code/prose/symbol/memory).",
+            "Hybrid search across the indexed chunk store: BM25 (porter + trigram FTS5) + dense vector ranker fused via RRF. Run `crux reindex` once to populate the chunk store. Default `view=default` returns a line-aware multi-line snippet for code chunks (matched line ± `view_lines` lines, marked with `>`); `view=compact` keeps the legacy ~80-char text window; `view=full` returns the entire chunk content (skip the follow-up read at the cost of a fatter response). Code/symbol hits also include the linked `symbol` (qualified_name from the AST graph) so you can chain into `crux_get_symbol_source` without parsing the file path.",
             json!({
                 "type": "object",
                 "required": ["query"],
@@ -167,6 +169,22 @@ pub fn all_tools() -> Vec<ToolDefinition> {
                             "enum": ["code", "prose", "symbol", "memory"]
                         },
                         "description": "Optional content-type filter."
+                    },
+                    "view": {
+                        "type": "string",
+                        "enum": ["compact", "default", "full"],
+                        "default": "default",
+                        "description": "Snippet shape per hit. `compact` = legacy ~80-char window. `default` = line-aware multi-line for code, char-window for prose. `full` = entire chunk content."
+                    },
+                    "view_lines": {
+                        "type": "integer",
+                        "minimum": 0, "maximum": 20, "default": 3,
+                        "description": "Context lines on each side of the matched line when `view=default` (only applies to code/symbol chunks)."
+                    },
+                    "debug": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "When true, attach a `debug` block with per-ranker rank, raw score, source_id, language, and tokens_est. Off by default to keep payloads lean."
                     }
                 }
             }),
@@ -186,6 +204,27 @@ pub fn all_tools() -> Vec<ToolDefinition> {
                     "timeout_seconds":    { "type": "integer", "minimum": 1, "maximum": 60, "default": 10 },
                     "max_output_bytes":   { "type": "integer", "minimum": 1024, "maximum": 1048576, "default": 65536 },
                     "inherit_env":        { "type": "boolean", "default": false }
+                }
+            }),
+        ),
+        tool(
+            "crux_digest",
+            "Render a compact, deterministic summary of past tool calls for a session (Layer 11). Replaces re-feeding raw history into context. Returns the latest rolled-up digest (if any) followed by still-pending events. Pass `pending_only=true` to skip the rollup view. Default session id is `default`.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "session_id":   { "type": "string", "default": "default", "description": "Session id whose digest you want." },
+                    "pending_only": { "type": "boolean", "default": false, "description": "When true, render only the pending (unrolled) events for the session." }
+                }
+            }),
+        ),
+        tool(
+            "crux_compact",
+            "Force-roll up all pending turn events for a session into a single digest row (Layer 11). Useful at session boundaries or when you want the current activity mirrored into long-term L8 memory. Returns the new digest id, event count, and rendered summary.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "session_id": { "type": "string", "default": "default", "description": "Session id to compact." }
                 }
             }),
         ),

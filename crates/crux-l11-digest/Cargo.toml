@@ -1,0 +1,20 @@
+[package]
+name = "crux-l11-digest"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "CRUX Layer 11: rolling conversation digest — archive past turns, surface compact pointers."
+
+[dependencies]
+crux-core.workspace = true
+crux-l8-memory.workspace = true
+rusqlite.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
