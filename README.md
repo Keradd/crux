@@ -1,7 +1,7 @@
 # CRUX
 
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
-[![Rust 1.75+](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](https://www.rust-lang.org)
+[![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org)
 [![Tests](https://img.shields.io/badge/tests-289%20passing-brightgreen.svg)](#testing)
 [![CI](https://github.com/Keradd/crux/actions/workflows/ci.yml/badge.svg)](https://github.com/Keradd/crux/actions/workflows/ci.yml)
 
@@ -49,7 +49,7 @@ cargo build --release
 
 ### Requirements
 
-- Rust **1.75+**
+- Rust **1.85+**
 - SQLite is bundled via `rusqlite` — no system dependency.
 - Optional: `--features crux-l7-sandbox/seccomp` enables Linux seccomp BPF
   syscall filtering (requires kernel ≥ 3.5).

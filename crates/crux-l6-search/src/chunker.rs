@@ -403,7 +403,7 @@ fn list_prose_walk(root: &Path, dir: &Path, out: &mut Vec<String>) -> Result<()>
             .strip_prefix(root)
             .unwrap_or(&path)
             .to_string_lossy()
-            .to_string();
+            .replace('\\', "/");
         out.push(rel);
     }
     Ok(())

@@ -216,7 +216,7 @@ fn load_chain(
                 });
             }
             // More-specific patterns (longer prefix, no star) win first.
-            aliases.sort_by(|a, b| pattern_priority(&b.pattern).cmp(&pattern_priority(&a.pattern)));
+            aliases.sort_by_key(|a| std::cmp::Reverse(pattern_priority(&a.pattern)));
             effective.aliases = aliases;
         }
     }

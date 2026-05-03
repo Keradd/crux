@@ -134,7 +134,7 @@ pub fn index_project_with(
             .strip_prefix(project_root)
             .unwrap_or(path)
             .to_string_lossy()
-            .to_string();
+            .replace('\\', "/");
         present.insert(rel.clone());
 
         let changed = if force {

@@ -290,15 +290,15 @@ mod linux {
             .collect();
         let status = Ruleset::default()
             .handle_access(AccessFs::from_all(abi))
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?
+            .map_err(|e| std::io::Error::other(e.to_string()))?
             .create()
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?
+            .map_err(|e| std::io::Error::other(e.to_string()))?
             .add_rules(path_beneath_rules(&read_paths, AccessFs::from_read(abi)))
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?
+            .map_err(|e| std::io::Error::other(e.to_string()))?
             .add_rules(path_beneath_rules(&write_paths, AccessFs::from_all(abi)))
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?
+            .map_err(|e| std::io::Error::other(e.to_string()))?
             .restrict_self()
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
         if matches!(status.ruleset, RulesetStatus::NotEnforced) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
