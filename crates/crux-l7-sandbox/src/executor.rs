@@ -253,7 +253,15 @@ mod linux {
         Ok(())
     }
 
-    fn set_rlimit(resource: libc::__rlimit_resource_t, value: u64) -> std::io::Result<()> {
+    // `setrlimit`'s resource argument is `__rlimit_resource_t` (= c_uint) on
+    // glibc but plain `c_int` on musl/uclibc/Android. Alias to the right type
+    // per target so the helper compiles on every Linux libc.
+    #[cfg(target_env = "gnu")]
+    type RlimitResource = libc::__rlimit_resource_t;
+    #[cfg(not(target_env = "gnu"))]
+    type RlimitResource = libc::c_int;
+
+    fn set_rlimit(resource: RlimitResource, value: u64) -> std::io::Result<()> {
         let rl = libc::rlimit {
             rlim_cur: value as libc::rlim_t,
             rlim_max: value as libc::rlim_t,
