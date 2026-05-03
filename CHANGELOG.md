@@ -20,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`crux setup [<agent>]`** — register CRUX as an MCP server (and
   hooks where supported) inside third-party AI agents in one
-  command. Six agents covered out of the box:
+  command. Eight agents covered out of the box:
   - **Claude Code** — MCP entry + `PreToolUse(Read)` /
     `PostToolUse(Edit|Write|MultiEdit)` hooks routed through
     `crux hook pre-tool` / `post-tool` + `/crux` slash-command file
@@ -37,20 +37,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `cline_mcp_settings.json` inside VS Code's `globalStorage`.
   - **Zed** — `context_servers.crux` in `~/.config/zed/settings.json`
     (Zed uses its own schema; CRUX writes the right shape).
+  - **OpenClaw** (docs.openclaw.ai) — `mcp.servers.crux` in
+    `~/.openclaw/openclaw.json` (honors `$OPENCLAW_CONFIG_PATH`
+    as an override the way the Gateway does).
+  - **Hermes Agent** (NousResearch) — `mcp_servers.crux` in
+    `~/.hermes/config.yaml` written as native YAML so peer entries
+    (filesystem, github, …) stay untouched.
 - Auto-detect mode: `crux setup` (no agent argument) probes for every
   supported agent's known config directory and integrates each one
   found.
-- Idempotent JSON merge — re-running `crux setup` is a no-op once the
-  entries exist; updates only fire when the stored value differs.
+- Idempotent merge (JSON for seven agents, YAML for Hermes) —
+  re-running `crux setup` is a no-op once the entries exist; updates
+  only fire when the stored value differs.
 - `--dry-run`, `--list`, `--scope global|project|auto`, `--crux-path`,
-  `--no-hooks`, `--no-skill`, `--force`, plus `--json` machine output.
+  `--no-hooks`, `--no-skill`, `--no-project-env`, `--env KEY=VAL`
+  (repeatable), `--force`, plus `--json` machine output.
+- Auto-sets `CRUX_PROJECT=<project_root>` inside each MCP entry's
+  `env` block so agents that spawn MCP children from `$HOME`
+  (Windsurf in particular) still target the correct project.
+- **`crux init` bootstrap chain** — `--setup-agents` registers
+  detected agents post-scaffold and `--index` runs a first-time
+  L5 AST index + L6 hybrid-search reindex so MCP lookups return
+  data immediately. Turns the five-step onboarding
+  (`build → install → init → setup → index`) into a single
+  `crux init --non-interactive --setup-agents --index` invocation.
+  `--agents <AGENT>` (repeatable) restricts the chain to a named
+  subset when auto-detect is too aggressive.
+- **`scripts/install.sh`** — one-shot installer: verifies `cargo`,
+  builds `--release`, installs to `~/.local/bin` (user scope, no
+  sudo) or `/usr/local/bin` (`--system`, sudo when needed), and
+  runs the init + setup + index bootstrap in the current directory.
+  Flags: `--system`, `--no-bootstrap`, `--no-agents`, `--no-index`.
+- `crux reindex --dir DIR` mirrors `crux index --dir` so the init
+  bootstrap can pipe a freshly scaffolded project through both
+  layers in one shot.
 
 The `/crux` slash-command file teaches Claude Code which CRUX MCP
 tool to reach for in common situations (symbol lookup, blast
 radius, hybrid search, sandbox execution, persistent memory, …).
 
-19 new unit tests cover JSON merge idempotency, claude-code hooks
-schema, Zed's `context_servers` schema, dry-run, and force semantics.
+### Dependencies
+
+- `serde_yaml 0.9` added to the workspace for native YAML merges
+  (Hermes Agent config).
+
+### Tests
+
+- **332 pass / 0 fail** on the default feature set (+43 over the
+  baseline of 289). Coverage includes JSON merge idempotency +
+  claude-code hooks schema + Zed `context_servers` schema +
+  OpenClaw `mcp.servers` schema + Hermes YAML merge + agent kind
+  parse aliases + per-agent `integrate` E2E + dry-run + force +
+  `--env CRUX_PROJECT` preservation.
 
 ## [0.1.1] — Patch release
 
