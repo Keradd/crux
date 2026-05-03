@@ -1,14 +1,27 @@
 //! `crux init` — Layer 10 scaffolding.
+//!
+//! Optionally chains MCP agent registration (`--setup-agents`) and a
+//! first-time AST + hybrid-search build (`--index`) so a fresh user
+//! can bootstrap CRUX in a single command:
+//!
+//! ```text
+//! crux init --non-interactive --setup-agents --index
+//! ```
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::Args as ClapArgs;
 use dialoguer::{theme::ColorfulTheme, Input, Select};
 
+use crux_l10_setup::setup::{
+    auto_detect as detect_agents, default_crux_path, integrate, AgentKind, IntegrateOptions,
+    IntegrateReport, Scope,
+};
 use crux_l10_setup::{init, profiles, InitOptions};
 
-use super::resolve_project_root;
+use super::{ast, resolve_project_root, search};
 use crate::Cli;
 
 #[derive(Debug, ClapArgs)]
@@ -40,6 +53,24 @@ pub struct Args {
     /// Project directory (defaults to autodetect from cwd).
     #[arg(long, value_name = "DIR")]
     pub dir: Option<PathBuf>,
+
+    /// After scaffolding, register CRUX as an MCP server in every
+    /// detected agent (Claude Code / Desktop, Cursor, Windsurf, Cline,
+    /// Zed). Equivalent to running `crux setup` afterwards.
+    #[arg(long)]
+    pub setup_agents: bool,
+
+    /// Restrict `--setup-agents` to a specific agent (repeatable).
+    /// Example: `--agents windsurf --agents claude-code`.
+    /// Ignored unless `--setup-agents` is set.
+    #[arg(long = "agents", value_name = "AGENT")]
+    pub agents: Vec<String>,
+
+    /// After scaffolding, run `crux index` (L5 AST graph) and
+    /// `crux reindex` (L6 hybrid search) so MCP lookups return data
+    /// immediately. Roughly 2-5s cold on small repos.
+    #[arg(long)]
+    pub index: bool,
 }
 
 pub fn run(cli: &Cli, args: &Args) -> Result<()> {
@@ -110,6 +141,104 @@ pub fn run(cli: &Cli, args: &Args) -> Result<()> {
         println!("re-run with --force to overwrite skipped files.");
     }
 
+    if args.setup_agents {
+        println!();
+        println!("registering MCP integrations…");
+        run_setup_agents_chain(cli, &root, &args.agents).context("chaining crux setup")?;
+    }
+
+    if args.index {
+        println!();
+        println!("running first-time index (L5 AST + L6 chunks)…");
+        let idx = ast::IndexArgs {
+            dir: Some(root.clone()),
+            force: false,
+        };
+        ast::run_index(cli, &idx).context("chaining crux index")?;
+        let rix = search::ReindexArgs {
+            dir: Some(root.clone()),
+            ..search::ReindexArgs::default()
+        };
+        search::run_reindex(cli, &rix).context("chaining crux reindex")?;
+    }
+
+    Ok(())
+}
+
+/// Chain `crux setup` after `crux init`: pick agents (auto-detect or
+/// explicit `--agents` list), set `CRUX_PROJECT=<root>` in every MCP
+/// entry's `env` block (so Windsurf-like launchers that spawn MCP from
+/// `$HOME` still hit the right project), and call the same integration
+/// code path `crux setup` uses.
+fn run_setup_agents_chain(
+    cli: &Cli,
+    project_root: &std::path::Path,
+    explicit: &[String],
+) -> Result<()> {
+    let agents: Vec<AgentKind> = if explicit.is_empty() {
+        let found = detect_agents();
+        if found.is_empty() {
+            println!("  · no supported agent detected — skipping MCP registration");
+            return Ok(());
+        }
+        found
+    } else {
+        let mut out = Vec::new();
+        for raw in explicit {
+            let kind = AgentKind::parse(raw).ok_or_else(|| {
+                anyhow::anyhow!("unknown agent '{raw}' (see `crux setup --list`)")
+            })?;
+            if !out.contains(&kind) {
+                out.push(kind);
+            }
+        }
+        out
+    };
+
+    let crux_path = default_crux_path();
+    let mut env: BTreeMap<String, String> = BTreeMap::new();
+    env.insert(
+        "CRUX_PROJECT".to_string(),
+        project_root.display().to_string(),
+    );
+
+    let mut reports: Vec<IntegrateReport> = Vec::with_capacity(agents.len());
+    for agent in &agents {
+        let opts = IntegrateOptions {
+            agent: *agent,
+            scope: Scope::Auto,
+            project_root: project_root.to_path_buf(),
+            crux_path: crux_path.clone(),
+            env: env.clone(),
+            install_hooks: agent.supports_hooks(),
+            install_skill: agent.supports_slash_command(),
+            dry_run: false,
+            force: false,
+        };
+        let report = integrate(&opts).with_context(|| format!("integrating {}", agent.label()))?;
+        reports.push(report);
+    }
+
+    if cli.json {
+        // Caller already printed the init JSON payload; emit a second
+        // terse object so downstream pipelines can still detect the
+        // chain outcome without re-running `crux setup --json`.
+        let payload = serde_json::json!({
+            "setup_chain": reports
+                .iter()
+                .map(|r| serde_json::json!({
+                    "agent":   r.agent,
+                    "changed": r.changed(),
+                }))
+                .collect::<Vec<_>>(),
+        });
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+    } else {
+        for r in &reports {
+            let state = if r.changed() { "updated" } else { "unchanged" };
+            println!("  {} {}", r.agent, state);
+        }
+    }
     Ok(())
 }
 

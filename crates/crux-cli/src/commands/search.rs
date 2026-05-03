@@ -1,6 +1,7 @@
 //! `crux reindex` / `crux search` — Layer 6 surface.
 
 use std::collections::HashSet;
+use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::Args as ClapArgs;
@@ -16,7 +17,7 @@ use crux_l6_search::{
 use super::resolve_project_root;
 use crate::Cli;
 
-#[derive(Debug, ClapArgs)]
+#[derive(Debug, Default, ClapArgs)]
 pub struct ReindexArgs {
     /// Drop existing chunks before re-indexing.
     #[arg(long)]
@@ -32,6 +33,11 @@ pub struct ReindexArgs {
     /// searchable via `crux search --kind memory`.
     #[arg(long)]
     pub no_memory: bool,
+    /// Override project root (default: autodetect). Mirrors `crux index
+    /// --dir` so `crux init --index` can pipe the freshly scaffolded
+    /// project straight through.
+    #[arg(long, value_name = "DIR")]
+    pub dir: Option<PathBuf>,
 }
 
 #[derive(Debug, ClapArgs)]
@@ -52,7 +58,10 @@ pub struct SearchArgs {
 // ─────────────────────────────────────────────────────────────────────────
 
 pub fn run_reindex(cli: &Cli, args: &ReindexArgs) -> Result<()> {
-    let project = resolve_project_root(cli.project.as_deref());
+    let project = args
+        .dir
+        .clone()
+        .unwrap_or_else(|| resolve_project_root(cli.project.as_deref()));
     let runtime = Runtime::open(Some(project.clone()))?;
     let key = project.display().to_string();
 

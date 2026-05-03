@@ -38,6 +38,28 @@ All ten layers are independent and opt-in via TOML.
 
 ## Install
 
+### One-shot installer (recommended)
+
+```bash
+# From a checkout of the repo — builds release + installs to ~/.local/bin
+# + auto-registers CRUX as an MCP server in every detected agent
+# + runs the first-time L5 index and L6 reindex in your CWD.
+bash scripts/install.sh
+
+# System scope (puts `crux` in /usr/local/bin; uses sudo if needed):
+bash scripts/install.sh --system
+
+# Skip bootstrap (just build + install the binary):
+bash scripts/install.sh --no-bootstrap
+
+# Install but don't touch any agent config:
+bash scripts/install.sh --no-agents
+```
+
+After that, `crux --version` should work and every installed agent
+(Claude Code / Desktop, Cursor, Windsurf, Cline, Zed) already has CRUX
+wired up as an MCP server pointed at the current directory.
+
 ### Prebuilt binaries
 
 Each tagged release ships statically-linked binaries on the
@@ -52,7 +74,7 @@ Each archive ships with a `.sha256` checksum next to it.
 
 ```bash
 # Linux x86_64 (gnu) example — replace TAG with the latest release tag.
-TAG=v0.1.1
+TAG=v0.2.0
 curl -L -o crux.tar.gz \
   "https://github.com/Keradd/crux/releases/download/${TAG}/crux-${TAG}-x86_64-unknown-linux-gnu.tar.gz"
 tar -xzf crux.tar.gz
@@ -78,11 +100,52 @@ cargo build --release
 
 ---
 
+## Activate inside your AI agent
+
+After `crux --version` works, register CRUX with your agent in one command:
+
+```bash
+crux setup                  # auto-detect every supported agent on this machine
+crux setup claude-code      # specific agent
+crux setup --list           # show what's supported
+crux setup --dry-run        # preview without writing anything
+```
+
+| Agent | What `crux setup` writes |
+|---|---|
+| **Claude Code** | `mcpServers.crux` + `PreToolUse(Read)` / `PostToolUse(Edit\|Write\|MultiEdit)` hooks + `/crux` slash-command (`~/.claude/commands/crux.md`) |
+| **Claude Desktop** | `mcpServers.crux` in `claude_desktop_config.json` (OS-canonical path) |
+| **Cursor** | `~/.cursor/mcp.json` |
+| **Windsurf** (Cascade) | `~/.codeium/windsurf/mcp_config.json` |
+| **Cline** (VS Code) | `cline_mcp_settings.json` in VS Code's `globalStorage` |
+| **Zed** | `context_servers.crux` in `~/.config/zed/settings.json` |
+| **OpenClaw** | `mcp.servers.crux` in `~/.openclaw/openclaw.json` (honors `$OPENCLAW_CONFIG_PATH`) |
+| **Hermes Agent** | `mcp_servers.crux` in `~/.hermes/config.yaml` (native YAML) |
+
+`crux setup` is idempotent: re-running it is a no-op once the entries exist.
+Use `--scope project` to write per-project configs instead of per-user, and
+`--no-hooks` / `--no-skill` to opt out of the Claude Code extras.
+
+After setup, restart your agent (or run `claude mcp list` for Claude Code)
+and the eleven CRUX MCP tools will be available — `crux_search`,
+`crux_find_symbol`, `crux_impact`, `crux_remember`, `crux_recall`,
+`crux_read`, `crux_execute`, and friends.
+
+---
+
 ## Quick start
 
 ```bash
-# Scaffold a project (writes CLAUDE.md, .crux/config.toml, .claudeignore)
+# ── One-line bootstrap (recommended) ────────────────────────────────
+# Scaffold project + register CRUX in every detected agent (with
+# CRUX_PROJECT=<cwd> pinned in each MCP env) + run first-time L5
+# AST index and L6 hybrid-search reindex.
+crux init --non-interactive --setup-agents --index
+
+# The three concerns can also be run one at a time:
 crux init --non-interactive --profile coding
+crux setup                  # auto-detect every supported agent
+crux index && crux reindex  # first-time AST + chunk build
 
 # L3 — filter bash output (git/cargo/npm/jest/generic, all TOML-defined)
 crux bash git status

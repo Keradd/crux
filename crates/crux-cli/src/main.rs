@@ -125,6 +125,10 @@ enum Cmd {
 
     /// Execute code in a sandboxed subprocess (Layer 7).
     Execute(commands::execute::ExecuteArgs),
+
+    /// Register CRUX as an MCP server (and hooks where supported)
+    /// in third-party AI agents (Claude Code, Cursor, Windsurf, etc.).
+    Setup(commands::setup::Args),
 }
 
 fn main() -> ExitCode {
@@ -169,5 +173,6 @@ fn dispatch(cli: &Cli) -> anyhow::Result<()> {
         Cmd::Reindex(a) => commands::search::run_reindex(cli, a),
         Cmd::Search(a) => commands::search::run_search(cli, a),
         Cmd::Execute(a) => commands::execute::run(cli, a),
+        Cmd::Setup(a) => commands::setup::run(cli, a),
     }
 }

@@ -14,6 +14,7 @@ pub mod mcp;
 pub mod memory;
 pub mod profile;
 pub mod search;
+pub mod setup;
 pub mod stats;
 pub mod version;
 

@@ -14,6 +14,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Homebrew tap.
 - Criterion benchmarks for L1 / L2 / L3 / L7 / L8 / L9 (currently L4 / L5 / L6 only).
 
+## [0.2.0] — Agent integration setup
+
+### Added
+
+- **`crux setup [<agent>]`** — register CRUX as an MCP server (and
+  hooks where supported) inside third-party AI agents in one
+  command. Six agents covered out of the box:
+  - **Claude Code** — MCP entry + `PreToolUse(Read)` /
+    `PostToolUse(Edit|Write|MultiEdit)` hooks routed through
+    `crux hook pre-tool` / `post-tool` + `/crux` slash-command file
+    at `~/.claude/commands/crux.md`.
+  - **Claude Desktop** — `mcpServers.crux` in
+    `claude_desktop_config.json` at the OS-canonical path
+    (macOS: `~/Library/Application Support/Claude/`,
+     Linux: `~/.config/Claude/`,
+     Windows: `%APPDATA%\Claude\`).
+  - **Cursor** — `~/.cursor/mcp.json` (or project-scoped
+    `<root>/.cursor/mcp.json`).
+  - **Windsurf (Cascade)** — `~/.codeium/windsurf/mcp_config.json`.
+  - **Cline** (VS Code extension `saoudrizwan.claude-dev`) —
+    `cline_mcp_settings.json` inside VS Code's `globalStorage`.
+  - **Zed** — `context_servers.crux` in `~/.config/zed/settings.json`
+    (Zed uses its own schema; CRUX writes the right shape).
+- Auto-detect mode: `crux setup` (no agent argument) probes for every
+  supported agent's known config directory and integrates each one
+  found.
+- Idempotent JSON merge — re-running `crux setup` is a no-op once the
+  entries exist; updates only fire when the stored value differs.
+- `--dry-run`, `--list`, `--scope global|project|auto`, `--crux-path`,
+  `--no-hooks`, `--no-skill`, `--force`, plus `--json` machine output.
+
+The `/crux` slash-command file teaches Claude Code which CRUX MCP
+tool to reach for in common situations (symbol lookup, blast
+radius, hybrid search, sandbox execution, persistent memory, …).
+
+19 new unit tests cover JSON merge idempotency, claude-code hooks
+schema, Zed's `context_servers` schema, dry-run, and force semantics.
+
 ## [0.1.1] — Patch release
 
 ### Fixed
@@ -138,6 +176,7 @@ First public release of CRUX. All ten layers ship with end-to-end coverage.
   L5 (`parse`, `find_symbol`, `impact_radius`),
   L6 (`HashEmbedder::embed`, `index_chunks`, `hybrid_search`).
 
-[Unreleased]: https://github.com/Keradd/crux/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/Keradd/crux/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Keradd/crux/releases/tag/v0.2.0
 [0.1.1]: https://github.com/Keradd/crux/releases/tag/v0.1.1
 [0.1.0]: https://github.com/Keradd/crux/releases/tag/v0.1.0

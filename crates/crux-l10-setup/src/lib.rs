@@ -8,8 +8,12 @@
 //! - [`detect_project_type`] — auto-detect language/framework
 //! - [`InitOptions`] / [`init`] — perform the scaffold
 //! - [`profiles`] / [`templates`] — exposed for inspection and tests
+//! - [`setup`] — register CRUX as an MCP server (and hooks where
+//!   supported) inside Claude Code, Claude Desktop, Cursor, Windsurf,
+//!   Cline, and Zed
 
 pub mod profiles;
+pub mod setup;
 pub mod templates;
 
 use std::fs;
