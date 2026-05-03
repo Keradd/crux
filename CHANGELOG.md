@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Planned
+
+- mdBook documentation chapters.
+- `cargo install crux` publishing (crates.io).
+- Homebrew tap.
+- Criterion benchmarks for L1 / L2 / L3 / L7 / L8 / L9 (currently L4 / L5 / L6 only).
+
+## [0.1.1] — Patch release
+
+### Fixed
+
+- **L7 sandbox: Python runtime broken on Windows.** The default
+  interpreter name was hard-coded to `python3`, but the official
+  python.org Windows installer only ships `python.exe`, so calls to
+  `python3` resolved to the Microsoft Store launcher stub at
+  `WindowsApps\python3.exe` — a no-op binary that exits 0 with empty
+  stdout. `RuntimeKind::default_interpreter()` is now Windows-aware
+  (`python` on Windows, `python3` elsewhere), so `crux execute
+  --runtime python` works on stock Windows installs.
+- **Cross-libc rlimit type for the L7 sandbox.** The hard-isolation
+  helper hard-coded `libc::__rlimit_resource_t` (glibc-only). Aliasing
+  to `libc::c_int` on non-glibc Linux libcs lets the crate compile on
+  `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`, which
+  the release workflow now builds.
+- **Test helpers harden against silent stubs.** `require_python` /
+  `require_bash` now probe by executing real code and matching the
+  expected stdout, instead of `--version`, so a Microsoft Store
+  launcher stub (or any stubbed shim) no longer falsely advertises a
+  working interpreter.
+
 ### Added
 
 - Multi-platform release workflow (`.github/workflows/release.yml`).
@@ -14,13 +44,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`gnu` + `musl`), Linux aarch64 (`gnu` + `musl`), macOS x86_64 +
   aarch64, and Windows x86_64; each archive is published with a
   `.sha256` checksum to the GitHub Releases page.
-
-### Planned
-
-- mdBook documentation chapters.
-- `cargo install crux` publishing (crates.io).
-- Homebrew tap.
-- Criterion benchmarks for L1 / L2 / L3 / L7 / L8 / L9 (currently L4 / L5 / L6 only).
 
 ## [0.1.0] — Initial release
 
@@ -115,5 +138,6 @@ First public release of CRUX. All ten layers ship with end-to-end coverage.
   L5 (`parse`, `find_symbol`, `impact_radius`),
   L6 (`HashEmbedder::embed`, `index_chunks`, `hybrid_search`).
 
-[Unreleased]: https://github.com/Keradd/crux/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Keradd/crux/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/Keradd/crux/releases/tag/v0.1.1
 [0.1.0]: https://github.com/Keradd/crux/releases/tag/v0.1.0

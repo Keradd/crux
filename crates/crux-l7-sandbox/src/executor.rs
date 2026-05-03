@@ -396,18 +396,30 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    /// Probe the runtime by actually executing a tiny program and
+    /// checking the output, not just `--version`. On Windows a missing
+    /// `python3.exe` resolves to a Microsoft Store launcher stub that
+    /// exits 0 with empty stdout for every invocation, so a `--version`
+    /// probe falsely reports success and the real test then fails with
+    /// `"" != "4"`. Verifying via stdout content side-steps the stub.
+    fn probe_runtime(interpreter: &str, args: &[&str], expected: &str) -> bool {
+        let out = match std::process::Command::new(interpreter).args(args).output() {
+            Ok(o) => o,
+            Err(_) => return false,
+        };
+        if !out.status.success() {
+            return false;
+        }
+        String::from_utf8_lossy(&out.stdout).contains(expected)
+    }
+
     fn require_python() -> bool {
-        std::process::Command::new("python3")
-            .arg("--version")
-            .output()
-            .is_ok()
+        let interpreter = RuntimeKind::Python.default_interpreter();
+        probe_runtime(interpreter, &["-c", "print('crux-probe')"], "crux-probe")
     }
 
     fn require_bash() -> bool {
-        std::process::Command::new("bash")
-            .arg("--version")
-            .output()
-            .is_ok()
+        probe_runtime("bash", &["-c", "echo crux-probe"], "crux-probe")
     }
 
     #[test]

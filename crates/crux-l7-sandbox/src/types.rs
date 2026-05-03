@@ -70,9 +70,24 @@ impl RuntimeKind {
 
     /// Default executable name used when no path is provided. Each can
     /// be overridden via `[layer.l7.runtimes.<kind>] interpreter = "..."`.
+    ///
+    /// Windows note: the official python.org installer ships `python.exe`
+    /// but no `python3.exe`, so calls to `python3` get caught by the
+    /// Microsoft Store launcher stub at `WindowsApps\python3.exe`, which
+    /// exits 0 with empty stdout instead of running anything. Pick the
+    /// platform-native name to dodge the stub.
     pub fn default_interpreter(self) -> &'static str {
         match self {
-            RuntimeKind::Python => "python3",
+            RuntimeKind::Python => {
+                #[cfg(target_os = "windows")]
+                {
+                    "python"
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    "python3"
+                }
+            }
             RuntimeKind::Bash => "bash",
             RuntimeKind::Node => "node",
         }
