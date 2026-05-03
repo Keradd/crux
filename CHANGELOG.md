@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Planned
+
+- mdBook documentation chapters.
+- `cargo install crux` publishing (crates.io).
+- Homebrew tap.
+- Criterion benchmarks for L1 / L2 / L3 / L7 / L8 / L9 (currently L4 / L5 / L6 only).
+
+## [0.3.0] — 2026-05-03 — Layer 11 conversation digest + L6 search lean-shape revamp
+
 ### Added
 
 - **Layer 11 — conversation digest** (`crux-l11-digest`). Records every
@@ -97,13 +106,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (auto-record + digest tool self-skip), and 6 new `crux_search`
   dispatch tests pinning the lean-shape + line-aware snippet +
   symbol enrichment + `view` / `debug` flag behavior.
-
-### Planned
-
-- mdBook documentation chapters.
-- `cargo install crux` publishing (crates.io).
-- Homebrew tap.
-- Criterion benchmarks for L1 / L2 / L3 / L7 / L8 / L9 (currently L4 / L5 / L6 only).
 
 ## [0.2.0] — 2026-05-03 — Agent integration setup
 
@@ -305,7 +307,8 @@ First public release of CRUX. All ten layers ship with end-to-end coverage.
   L5 (`parse`, `find_symbol`, `impact_radius`),
   L6 (`HashEmbedder::embed`, `index_chunks`, `hybrid_search`).
 
-[Unreleased]: https://github.com/Keradd/crux/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Keradd/crux/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/Keradd/crux/releases/tag/v0.3.0
 [0.2.0]: https://github.com/Keradd/crux/releases/tag/v0.2.0
 [0.1.1]: https://github.com/Keradd/crux/releases/tag/v0.1.1
 [0.1.0]: https://github.com/Keradd/crux/releases/tag/v0.1.0

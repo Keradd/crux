@@ -84,7 +84,7 @@ Each archive ships with a `.sha256` checksum next to it.
 
 ```bash
 # Linux x86_64 (gnu) example — replace TAG with the latest release tag.
-TAG=v0.2.0
+TAG=v0.3.0
 curl -L -o crux.tar.gz \
   "https://github.com/Keradd/crux/releases/download/${TAG}/crux-${TAG}-x86_64-unknown-linux-gnu.tar.gz"
 tar -xzf crux.tar.gz
