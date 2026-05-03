@@ -7,11 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Multi-platform release workflow (`.github/workflows/release.yml`).
+  Tag pushes (`v*`) build statically-linked binaries for Linux x86_64
+  (`gnu` + `musl`), Linux aarch64 (`gnu` + `musl`), macOS x86_64 +
+  aarch64, and Windows x86_64; each archive is published with a
+  `.sha256` checksum to the GitHub Releases page.
+
 ### Planned
 
 - mdBook documentation chapters.
-- Multi-platform release CI (Linux / macOS / Windows; x86_64 + aarch64).
-- `cargo install crux` publishing.
+- `cargo install crux` publishing (crates.io).
 - Homebrew tap.
 - Criterion benchmarks for L1 / L2 / L3 / L7 / L8 / L9 (currently L4 / L5 / L6 only).
 

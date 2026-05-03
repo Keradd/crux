@@ -38,6 +38,28 @@ All ten layers are independent and opt-in via TOML.
 
 ## Install
 
+### Prebuilt binaries
+
+Each tagged release ships statically-linked binaries on the
+[GitHub Releases](https://github.com/Keradd/crux/releases) page for:
+
+- Linux x86_64 (`gnu` + `musl`)
+- Linux aarch64 (`gnu` + `musl`)
+- macOS x86_64 + aarch64 (Apple Silicon)
+- Windows x86_64
+
+Each archive ships with a `.sha256` checksum next to it.
+
+```bash
+# Linux x86_64 (gnu) example — replace TAG with the latest release tag.
+TAG=v0.1.0
+curl -L -o crux.tar.gz \
+  "https://github.com/Keradd/crux/releases/download/${TAG}/crux-${TAG}-x86_64-unknown-linux-gnu.tar.gz"
+tar -xzf crux.tar.gz
+sudo install crux /usr/local/bin/
+crux --help
+```
+
 ### From source
 
 ```bash
@@ -47,7 +69,7 @@ cargo build --release
 # binary at ./target/release/crux (~11 MB stripped on Linux x86_64)
 ```
 
-### Requirements
+### Requirements (source builds)
 
 - Rust **1.85+**
 - SQLite is bundled via `rusqlite` — no system dependency.
