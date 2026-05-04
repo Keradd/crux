@@ -240,14 +240,21 @@ fn mtime_of(path: &Path) -> Option<SystemTime> {
 mod tests {
     use super::*;
     use std::fs;
+    use std::sync::Mutex;
     use std::time::Duration;
 
-    /// Set `$CRUX_HOME` to a tempdir for the duration of the closure.
-    /// Tests touching the global config path must run sequentially
-    /// (they all mutate the env var); cargo's test harness serializes
-    /// per file by default, so as long as we keep watcher tests in
-    /// their own module we're safe.
+    /// `$CRUX_HOME` is process-global but cargo runs tests in parallel
+    /// by default, so every test in this module that mutates the env
+    /// var must take this lock. Without it, one test's Runtime::open
+    /// can race against another test's tempdir cleanup and fail with
+    /// SQLITE_CANTOPEN (observed on the macOS CI runner).
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Set `$CRUX_HOME` to a tempdir for the duration of the closure,
+    /// holding [`ENV_LOCK`] across the whole call so sibling tests
+    /// don't observe a half-swapped value.
     fn with_crux_home<R>(f: impl FnOnce(&Path) -> R) -> R {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let prev = std::env::var("CRUX_HOME").ok();
         std::env::set_var("CRUX_HOME", dir.path());
