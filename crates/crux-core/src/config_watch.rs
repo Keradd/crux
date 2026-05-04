@@ -78,10 +78,7 @@ impl ConfigWatcher {
         let global_path = runtime.global_config_path.clone();
         let project_path = runtime.project_config_path.clone();
         let global_stamp = stamp_of(&global_path);
-        let project_stamp = project_path
-            .as_deref()
-            .map(stamp_of)
-            .unwrap_or_default();
+        let project_stamp = project_path.as_deref().map(stamp_of).unwrap_or_default();
         Self {
             config: Arc::new(RwLock::new(runtime.config.clone())),
             state: Mutex::new(WatcherState {
@@ -115,8 +112,8 @@ impl ConfigWatcher {
             .as_deref()
             .map(stamp_of)
             .unwrap_or_default();
-        let changed = new_global_stamp != state.global_stamp
-            || new_project_stamp != state.project_stamp;
+        let changed =
+            new_global_stamp != state.global_stamp || new_project_stamp != state.project_stamp;
         if !changed {
             return Ok(false);
         }
