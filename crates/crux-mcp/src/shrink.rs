@@ -1,22 +1,3 @@
-//! CRUX Layer 2 — MCP description shrinker.
-//!
-//! Acts as a transparent proxy in front of an upstream MCP server. Reads
-//! line-delimited JSON-RPC envelopes on stdin from the agent, forwards
-//! them to the upstream process unchanged, and on the way back compresses
-//! prose-heavy fields (`description`) inside `tools/list`, `prompts/list`,
-//! `resources/list`, and `resourceTemplates` results.
-//!
-//! Mechanism is rule-based — no LLM call. We strip filler words and
-//! redundant phrases while preserving:
-//!   - code blocks (fenced ``` and indented)
-//!   - inline code (backticks)
-//!   - URLs and file paths
-//!   - identifiers, env vars, version numbers
-//!   - JSON Schema fragments inside the description
-//!
-//! Tool-call response bodies are NEVER touched — they may contain
-//! structured data the agent depends on byte-for-byte.
-
 use std::io::{BufRead, BufReader, Write};
 use std::process::{ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::OnceLock;
@@ -29,8 +10,6 @@ use crux_core::error::{CruxError, Result};
 
 const COMPRESSIBLE_LIST_KEYS: &[&str] = &["tools", "prompts", "resources", "resourceTemplates"];
 
-/// Run the shrinker proxy: spawn `upstream`, pump stdin/stderr through,
-/// and transform stdout. Blocks until either side closes.
 pub fn run_proxy(upstream: &[String]) -> Result<i32> {
     if upstream.is_empty() {
         return Err(CruxError::other(
@@ -49,12 +28,8 @@ pub fn run_proxy(upstream: &[String]) -> Result<i32> {
     let upstream_stdin = child.stdin.take().expect("stdin piped");
     let upstream_stdout = child.stdout.take().expect("stdout piped");
 
-    // Forward agent → upstream verbatim. Runs on its own thread so
-    // upstream's first reply doesn't block waiting on the agent's
-    // second message.
     let in_thread = thread::spawn(move || forward_stdin(upstream_stdin));
 
-    // upstream → agent: parse, compress, emit.
     let out_thread = thread::spawn(move || forward_upstream_to_stdout(upstream_stdout));
 
     let status = child
@@ -114,20 +89,13 @@ fn forward_upstream_to_stdout(upstream_stdout: ChildStdout) {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// JSON traversal
-// ─────────────────────────────────────────────────────────────────────────
-
 pub fn transform_line(line: &str) -> String {
     match serde_json::from_str::<Value>(line) {
         Ok(mut v) => {
             shrink_response(&mut v);
             serde_json::to_string(&v).unwrap_or_else(|_| line.to_string())
         }
-        Err(_) => {
-            // Not JSON (could be a stderr log leaking) — pass through unchanged.
-            line.to_string()
-        }
+        Err(_) => line.to_string(),
     }
 }
 
@@ -135,7 +103,6 @@ fn shrink_response(value: &mut Value) {
     let Value::Object(map) = value else {
         return;
     };
-    // Only `result` payloads carry the lists we compress.
     let Some(result) = map.get_mut("result") else {
         return;
     };
@@ -154,9 +121,6 @@ fn shrink_response(value: &mut Value) {
         }
     }
 
-    // Some servers stuff descriptions in nested schemas. Walk recursively
-    // only when we didn't already compress at the top level — avoids
-    // double-processing nested params on a tools/list reply.
     if !compressed_any {
         walk_nested_descriptions(result);
     }
@@ -201,13 +165,6 @@ fn walk_nested_descriptions(value: &mut Value) {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// Prose compressor
-// ─────────────────────────────────────────────────────────────────────────
-
-/// Compress prose without touching code, URLs, paths, identifiers,
-/// numbers, env vars. Logic: split into protected / non-protected spans
-/// via a regex, compress only non-protected spans, reassemble.
 pub fn compress_prose(input: &str) -> String {
     if input.is_empty() {
         return String::new();
@@ -227,20 +184,16 @@ pub fn compress_prose(input: &str) -> String {
         out.push_str(&compress_unprotected(&input[last_end..]));
     }
 
-    // Final: collapse runs of spaces and strip leading/trailing space.
     let mut s = collapse_spaces(&out);
     s = s.trim().to_string();
     s
 }
 
 fn compress_unprotected(seg: &str) -> String {
-    // Word-by-word, drop fillers; replace verbose phrases.
     let mut s = seg.to_string();
-    // Phrase replacements first (longest first to avoid partial overlap).
     for (pat, rep) in PHRASES {
         s = ascii_ireplace(&s, pat, rep);
     }
-    // Token-level filler removal.
     s = strip_filler_words(&s);
     s
 }
@@ -291,8 +244,6 @@ const PHRASES: &[(&str, &str)] = &[
 ];
 
 fn strip_filler_words(input: &str) -> String {
-    // Scan word-by-word preserving punctuation. We only treat ASCII
-    // alphabetic runs as candidate words.
     let mut out = String::with_capacity(input.len());
     let mut chars = input.chars().peekable();
     while let Some(c) = chars.next() {
@@ -308,7 +259,6 @@ fn strip_filler_words(input: &str) -> String {
                 }
             }
             if FILLER_WORDS.iter().any(|f| f.eq_ignore_ascii_case(&word)) {
-                // Drop the word and one trailing space (best effort).
                 if out.ends_with(' ') && chars.peek() == Some(&' ') {
                     chars.next();
                 }
@@ -368,16 +318,6 @@ fn eq_ignore_ascii(a: &[u8], b: &[u8]) -> bool {
         .all(|(x, y)| x.eq_ignore_ascii_case(y))
 }
 
-/// Regex matching anything we MUST preserve verbatim:
-///
-///   - fenced code blocks (```...```)
-///   - inline code (`...`)
-///   - URLs (http/https/ftp)
-///   - absolute or dotted paths (/foo/bar, ./bar, ../bar, .bar)
-///   - env-style identifiers: ALL_CAPS_WITH_UNDERSCORES
-///   - `name=value` pairs
-///   - version-ish tokens (1.2, 1.2.3, v1.2.3, semver-ish)
-///   - identifier-with-dot or hyphen tokens (foo.bar, my-tool)
 fn protected_regex() -> &'static regex::Regex {
     static RE: OnceLock<regex::Regex> = OnceLock::new();
     RE.get_or_init(|| {

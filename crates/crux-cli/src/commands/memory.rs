@@ -1,5 +1,3 @@
-//! `crux remember` / `crux recall` / `crux memory ...` — Layer 8 surface.
-
 use anyhow::{Context, Result};
 use clap::{Args as ClapArgs, Subcommand};
 
@@ -16,114 +14,83 @@ use crate::Cli;
 
 #[derive(Debug, ClapArgs)]
 pub struct RememberArgs {
-    /// Observation kind: user/feedback/project/reference/guardrail/error_pattern/decision/convention.
     #[arg(short, long)]
     pub kind: String,
 
-    /// Short title (one line).
     #[arg(short, long)]
     pub title: String,
 
-    /// Body / content. If omitted with --stdin, reads from stdin.
     #[arg(short, long)]
     pub content: Option<String>,
 
-    /// Read content from stdin instead of --content.
     #[arg(long)]
     pub stdin: bool,
 
-    /// Optional rationale ("why").
     #[arg(long)]
     pub why: Option<String>,
 
-    /// Optional how-to-apply note.
     #[arg(long = "how")]
     pub how_to_apply: Option<String>,
 
-    /// Optional symbol (qualified name) this observation relates to.
     #[arg(long)]
     pub symbol: Option<String>,
 
-    /// Optional file path it relates to.
     #[arg(long)]
     pub file: Option<String>,
 
-    /// Comma-separated tags.
     #[arg(long, value_delimiter = ',')]
     pub tags: Vec<String>,
 
-    /// 1..=10. Default 5.
     #[arg(long, default_value_t = 5)]
     pub importance: u8,
 
-    /// Mark observation as private (excluded from inter-agent bus).
     #[arg(long)]
     pub private: bool,
 }
 
 #[derive(Debug, ClapArgs)]
 pub struct RecallArgs {
-    /// Free-text query. Empty = list most-relevant.
     #[arg(value_name = "QUERY", default_value = "")]
     pub query: String,
 
-    /// Filter to specific kinds (comma-separated).
     #[arg(long, value_delimiter = ',')]
     pub kind: Vec<String>,
 
-    /// Filter to a specific symbol.
     #[arg(long)]
     pub symbol: Option<String>,
 
-    /// Limit results.
     #[arg(long, default_value_t = 10)]
     pub limit: usize,
 
-    /// Include archived observations.
     #[arg(long)]
     pub include_archived: bool,
 }
 
 #[derive(Debug, Subcommand)]
 pub enum MemoryCmd {
-    /// Show available observation kinds.
     Kinds,
-    /// List observations for the current project.
     List {
         #[arg(long, default_value_t = 20)]
         limit: usize,
     },
-    /// Run the periodic decay pass and report stats.
     Decay,
-    /// Archive an observation (it survives but recall skips it).
     Archive {
         #[arg(value_name = "ID")]
         id: i64,
     },
-    /// Permanently delete an observation.
     Delete {
         #[arg(value_name = "ID")]
         id: i64,
     },
-    /// Render L8 observations to a `MEMORY.md` view that OpenClaw /
-    /// Claude Code can pick up at startup. Direction is one-way:
-    /// L8 → MEMORY.md. Hand-written files are refused unless `--force`.
     Export {
-        /// Target path. Defaults to `<project_root>/MEMORY.md`.
         #[arg(long)]
         target: Option<PathBuf>,
-        /// Cap rendered observations. Default = 200.
         #[arg(long)]
         limit: Option<usize>,
-        /// Overwrite an existing hand-written `MEMORY.md`. Destructive.
         #[arg(long)]
         force: bool,
     },
 }
-
-// ─────────────────────────────────────────────────────────────────────────
-// remember
-// ─────────────────────────────────────────────────────────────────────────
 
 pub fn run_remember(cli: &Cli, args: &RememberArgs) -> Result<()> {
     let project = resolve_project_root(cli.project.as_deref());
@@ -173,10 +140,6 @@ pub fn run_remember(cli: &Cli, args: &RememberArgs) -> Result<()> {
     Ok(())
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// recall
-// ─────────────────────────────────────────────────────────────────────────
-
 pub fn run_recall(cli: &Cli, args: &RecallArgs) -> Result<()> {
     let project = resolve_project_root(cli.project.as_deref());
     let runtime = Runtime::open(Some(project.clone()))?;
@@ -213,10 +176,6 @@ pub fn run_recall(cli: &Cli, args: &RecallArgs) -> Result<()> {
     }
     Ok(())
 }
-
-// ─────────────────────────────────────────────────────────────────────────
-// memory subcommands
-// ─────────────────────────────────────────────────────────────────────────
 
 pub fn run_memory(cli: &Cli, cmd: &MemoryCmd) -> Result<()> {
     match cmd {
@@ -368,10 +327,6 @@ fn export(cli: &Cli, target: Option<PathBuf>, limit: Option<usize>, force: bool)
     }
     Ok(())
 }
-
-// ─────────────────────────────────────────────────────────────────────────
-// helpers
-// ─────────────────────────────────────────────────────────────────────────
 
 fn parse_kinds(values: &[String]) -> Result<Vec<ObservationKind>> {
     let mut out = Vec::with_capacity(values.len());

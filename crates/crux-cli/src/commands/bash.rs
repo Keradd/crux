@@ -1,15 +1,3 @@
-//! `crux bash` — Layer 3 bash output filter.
-//!
-//! Two modes:
-//!
-//! 1. `crux bash <cmd> [args...]` — fork the command, capture stdout, run
-//!    Layer 3 filters, print filtered output. Stderr passes through. Exit
-//!    code is preserved.
-//!
-//! 2. `crux bash --filter-only <cmd>` reads stdin into the filter pipeline
-//!    instead of executing anything. Useful for piping (`somecmd | crux
-//!    bash --filter-only somecmd`) or for testing custom filters.
-
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 use std::time::Instant;
@@ -25,19 +13,15 @@ use crate::Cli;
 
 #[derive(Debug, ClapArgs)]
 pub struct Args {
-    /// Read input from stdin instead of executing the command.
     #[arg(long)]
     pub filter_only: bool,
 
-    /// Force passthrough (no filtering); useful for debugging.
     #[arg(long)]
     pub passthrough: bool,
 
-    /// Show what would happen without modifying telemetry / output.
     #[arg(long)]
     pub dry_run: bool,
 
-    /// The command + args to filter.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 1..)]
     pub cmd: Vec<String>,
 }
@@ -56,7 +40,6 @@ pub fn run(cli: &Cli, args: &Args) -> Result<()> {
     let runtime = Runtime::open(project_opt.clone())?;
 
     if !runtime.config.layers.l3_bash_filter && !args.filter_only {
-        // Layer disabled — shell out without touching anything.
         return passthrough_exec(&args.cmd);
     }
 
@@ -84,8 +67,6 @@ pub fn run(cli: &Cli, args: &Args) -> Result<()> {
         return passthrough_exec(&args.cmd);
     }
 
-    // Execute the command, capturing stdout. Stderr is inherited so the
-    // user sees compile errors etc. without us having to interleave.
     let started = Instant::now();
     let mut child = Command::new(&args.cmd[0])
         .args(&args.cmd[1..])
@@ -134,10 +115,6 @@ pub fn run(cli: &Cli, args: &Args) -> Result<()> {
         std::process::exit(1);
     }
 }
-
-// ─────────────────────────────────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────────────────────────────────
 
 fn passthrough_exec(cmd: &[String]) -> Result<()> {
     let status = Command::new(&cmd[0]).args(&cmd[1..]).status()?;

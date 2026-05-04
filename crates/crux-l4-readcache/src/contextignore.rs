@@ -1,15 +1,3 @@
-//! `.contextignore` engine — gitignore-style hard block on file reads.
-//!
-//! Two scopes scanned, in order:
-//! 1. Project: `<project_root>/.crux/contextignore`
-//! 2. User:    `<crux_home>/contextignore`
-//!
-//! Both files are optional. Empty/missing → no block. Pattern matching
-//! supports `*`, `?`, `**` against either the basename or the absolute
-//! path, matching gitignore semantics for the common cases. Pre-compiled
-//! regexes are cached per pattern so a hot cache hit avoids ~1k regex
-//! compilations per session (alex's measurement).
-
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
@@ -29,8 +17,6 @@ impl ContextIgnore {
         Self::default()
     }
 
-    /// Load both scopes, project first, user second. `crux_home` may be
-    /// `None` if the caller doesn't want the user-scope check (tests).
     pub fn load(project_root: &Path, crux_home: Option<&Path>) -> Self {
         let mut patterns: Vec<String> = Vec::new();
         let project_file = project_root.join(".crux").join("contextignore");
@@ -66,7 +52,6 @@ impl ContextIgnore {
         &self.patterns
     }
 
-    /// True if `file_path` matches any pattern.
     pub fn matches(&self, file_path: &Path) -> bool {
         if self.patterns.is_empty() {
             return false;
@@ -86,10 +71,6 @@ impl ContextIgnore {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// fnmatch-style glob → regex, cached per pattern
-// ─────────────────────────────────────────────────────────────────────────
-
 fn cache() -> &'static Mutex<HashMap<String, Regex>> {
     static CACHE: OnceLock<Mutex<HashMap<String, Regex>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
@@ -101,16 +82,11 @@ fn compile(pattern: &str) -> Regex {
         return re.clone();
     }
     let regex_src = glob_to_regex(pattern);
-    let re = Regex::new(&regex_src).unwrap_or_else(|_| {
-        // Hopeless pattern → never match. Safer than refusing to load.
-        Regex::new("$.^").unwrap()
-    });
+    let re = Regex::new(&regex_src).unwrap_or_else(|_| Regex::new("$.^").unwrap());
     guard.insert(pattern.to_string(), re.clone());
     re
 }
 
-/// Translate a glob pattern (gitignore subset) into a Rust regex. Supports
-/// `*` (any non-slash chars), `**` (any path), `?` (single non-slash char).
 fn glob_to_regex(pattern: &str) -> String {
     let mut out = String::from("^");
     let mut chars = pattern.chars().peekable();

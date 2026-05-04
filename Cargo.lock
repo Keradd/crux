@@ -474,6 +474,7 @@ dependencies = [
  "crux-core",
  "crux-l10-setup",
  "crux-l11-digest",
+ "crux-l12-hygiene",
  "crux-l3-bash",
  "crux-l4-readcache",
  "crux-l5-ast",
@@ -535,6 +536,14 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tracing",
+]
+
+[[package]]
+name = "crux-l12-hygiene"
+version = "0.3.0"
+dependencies = [
+ "serde",
+ "tempfile",
 ]
 
 [[package]]

@@ -9,6 +9,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **CRUX Humanizer** — new `crux-humanizer` crate + `crux humanize`
+  CLI subcommand. Rewrites raw AI-flavoured prose into concise,
+  human-sounding text using a deterministic, local-only rule set
+  (no LLM round-trip, no network).
+  - Six modes: `concise` (default), `casual`, `professional`,
+    `developer`, `social`, `github-readme`. Each mode toggles a
+    different combination of strike-phrase aggression, fluff-
+    adjective deletion, contractions, and blank-line collapsing
+    via `HumanizeOptions::for_mode`.
+  - Strike list covers AI-tell phrases (`In conclusion,`, `It is
+    important to note that`, `As an AI language model,`, `I hope
+    this helps!`, `Let's dive in!`), wordy substitutions (`in
+    order to` → `to`, `the majority of` → `most`, `due to the
+    fact that` → `because`), fluff verbs (`utilize`, `leverage`,
+    `facilitate`, `commence`, `delve`, `endeavor`), and
+    marketing adjectives (`robust`, `comprehensive`,
+    `cutting-edge`, …). Casing is preserved on word substitutions.
+  - Segment-aware tokenizer in `crux-humanizer/src/tokenizer.rs`
+    locks fenced code blocks, inline code spans, URLs, filesystem
+    paths, IPv4 / IPv6 / hex literals, qualified identifiers
+    (`foo::bar::baz`), function-call literals (`foo(args)`),
+    `@scope/pkg` packages, and `SCREAMING_SNAKE_CASE` constants
+    so they pass through byte-for-byte.
+  - CLI surface mirrors the existing `crux execute` shape:
+    `crux humanize --mode <MODE> --input <STRING>` /
+    `--file <PATH>` / stdin, with `--json` for machine-readable
+    output and `--stats` for a one-line stderr footer with
+    chars / words saved + edit count.
+  - 36 unit tests in `crux-humanizer` cover buzzword removal,
+    code preservation (fenced + inline), URL preservation, IPv4 /
+    hex / path / scoped-package preservation, mode-specific
+    behaviour (Casual contracts, Concise does not, Professional
+    keeps fluff, GithubReadme keeps blank lines), repetition
+    collapse, capitalisation preservation, stats accounting, and
+    a mixed-codeblock-and-strike-phrase regression case.
+
 - **Hot reload `crux.toml`** (Phase 4 Task I). `crux-core` now ships a
   `ConfigWatcher` (in `crux_core::config_watch`) that holds a published
   `Config` behind an `Arc<RwLock<_>>` and re-parses both the global

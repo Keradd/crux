@@ -1,6 +1,3 @@
-//! `MemoryEngine` — orchestrates remember/recall/decay over the SQLite
-//! tables created by migration 003.
-
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 
@@ -22,12 +19,6 @@ impl<'c> MemoryEngine<'c> {
         Ok(Self { conn, decay })
     }
 
-    // ─────────────────────────────────────────────────────────────────
-    // remember
-    // ─────────────────────────────────────────────────────────────────
-
-    /// Persist a new observation. Idempotent: same content_hash + project
-    /// → existing row id, and we bump the access count instead.
     pub fn remember(&self, obs: NewObservation) -> Result<i64> {
         if obs.title.trim().is_empty() {
             return Err(CruxError::other("observation title cannot be empty"));
@@ -40,7 +31,6 @@ impl<'c> MemoryEngine<'c> {
         }
 
         let hash = content_hash(&obs.kind, &obs.title, &obs.content);
-        // Dedup
         if let Some(id) = self.find_by_hash(&obs.project_root, &hash)? {
             self.bump_access(id, /*boost=*/ true)?;
             return Ok(id);
@@ -94,17 +84,6 @@ impl<'c> MemoryEngine<'c> {
         Ok(n > 0)
     }
 
-    // ─────────────────────────────────────────────────────────────────
-    // recall
-    // ─────────────────────────────────────────────────────────────────
-
-    /// Decay-aware recall. Empty query returns the most-recent / highest
-    /// importance items. Non-empty query runs FTS5 against title + content
-    /// + why + how_to_apply + tags, then re-ranks by:
-    ///
-    ///   final = importance * decayed_relevance + 0.1 * fts_bonus
-    ///
-    /// where `fts_bonus` is `-bm25(...)` clamped to `[0, 1]`. Higher = better.
     pub fn recall(&self, q: &RecallQuery) -> Result<Vec<RankedObservation>> {
         let now = chrono::Utc::now().timestamp();
         let mut where_clauses: Vec<String> = vec!["o.archived = 0".into()];
@@ -133,7 +112,6 @@ impl<'c> MemoryEngine<'c> {
             }
         }
         if q.include_archived {
-            // Replace the first clause we added.
             where_clauses[0] = "1=1".into();
         }
 
@@ -172,7 +150,6 @@ impl<'c> MemoryEngine<'c> {
             r.rank = i;
         }
 
-        // Bump access on the items we surface so decay rewards repeat use.
         let now_epoch = chrono::Utc::now().timestamp();
         for r in &ranked {
             self.touch(r.observation.id, now_epoch)?;
@@ -207,20 +184,6 @@ impl<'c> MemoryEngine<'c> {
         Ok(rows)
     }
 
-    // ─────────────────────────────────────────────────────────────────
-    // passive auto-surface helpers
-    //
-    // These exist for the MCP `crux_read` / `crux_get_symbol_source`
-    // dispatchers: every time the agent reads a file or fetches symbol
-    // source, CRUX injects a short footer listing past observations
-    // attached to that file / symbol. Same decay-aware ranking as
-    // `recall`, but without an FTS query.
-    // ─────────────────────────────────────────────────────────────────
-
-    /// Return top-N active observations whose `file_path` matches one of
-    /// `path_variants`. Pass both absolute and project-relative forms so
-    /// we catch observations stored in either shape. Empty query, decay
-    /// re-ranked. Touches (bumps access) the surfaced rows.
     pub fn recall_by_file(
         &self,
         project_root: &str,
@@ -240,8 +203,6 @@ impl<'c> MemoryEngine<'c> {
         self.recall(&q)
     }
 
-    /// Return top-N active observations whose `symbol` column exactly
-    /// matches `qualified_name`. Empty query, decay re-ranked.
     pub fn recall_by_symbol(
         &self,
         project_root: &str,
@@ -261,8 +222,6 @@ impl<'c> MemoryEngine<'c> {
         self.recall(&q)
     }
 
-    /// Run periodic decay maintenance: drop relevance below floor for each
-    /// observation, archive ones whose decayed score has hit the floor.
     pub fn decay_pass(&self, now_epoch: i64) -> Result<DecayStats> {
         let mut stats = DecayStats::default();
         let mut stmt = self.conn.prepare(
@@ -305,7 +264,6 @@ impl<'c> MemoryEngine<'c> {
                 stats.updated += 1;
             }
             if (new_score - p.min_score).abs() < 1e-6 && p.min_score < 0.2 {
-                // Hit the floor at a "low importance" floor — archive.
                 self.conn.execute(
                     "UPDATE observations SET archived = 1, updated_at_epoch = ? WHERE id = ?",
                     params![now_epoch, id],
@@ -315,10 +273,6 @@ impl<'c> MemoryEngine<'c> {
         }
         Ok(stats)
     }
-
-    // ─────────────────────────────────────────────────────────────────
-    // internal
-    // ─────────────────────────────────────────────────────────────────
 
     fn find_by_hash(&self, project: &str, hash: &str) -> Result<Option<i64>> {
         let id = self
@@ -335,7 +289,6 @@ impl<'c> MemoryEngine<'c> {
     fn bump_access(&self, id: i64, boost: bool) -> Result<()> {
         let now = chrono::Utc::now().timestamp();
         if boost {
-            // Determine the kind so we know how much to boost.
             let kind_s: String = self.conn.query_row(
                 "SELECT kind FROM observations WHERE id = ?",
                 params![id],
@@ -404,8 +357,6 @@ impl<'c> MemoryEngine<'c> {
         params_vec: &[rusqlite::types::Value],
         limit: usize,
     ) -> Result<Vec<(Observation, f64)>> {
-        // FTS5's `MATCH` is strict about syntax; quote the user query to
-        // avoid surfacing parse errors on punctuation.
         let safe = sanitize_fts_query(query);
         let sql = format!(
             "SELECT {cols}, bm25(observations_fts) AS bm
@@ -429,8 +380,6 @@ impl<'c> MemoryEngine<'c> {
             .query_map(rusqlite::params_from_iter(p.iter()), |row| {
                 let obs = obs_from_row(row)?;
                 let bm: f64 = row.get(OBS_COLUMN_COUNT)?;
-                // BM25 is negative-better in SQLite FTS5; map to a 0..1
-                // bonus by clamping.
                 let bonus = (-bm).clamp(0.0, 5.0) / 5.0;
                 Ok((obs, bonus))
             })?
@@ -439,14 +388,9 @@ impl<'c> MemoryEngine<'c> {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// Row mapping helpers
-// ─────────────────────────────────────────────────────────────────────────
-
 const OBS_COLUMN_COUNT: usize = 19;
 
 fn obs_columns() -> &'static str {
-    // Order MUST match `obs_from_row` indices.
     "o.id, o.project_root, o.session_id, o.agent_id, o.kind, o.title, o.content, \
      o.why, o.how_to_apply, o.symbol, o.file_path, o.tags, o.importance, \
      o.relevance_score, o.access_count, o.content_hash, o.archived, \
@@ -503,8 +447,6 @@ fn content_hash(kind: &ObservationKind, title: &str, content: &str) -> String {
     hex::encode(&bytes[..16])
 }
 
-/// Wrap each space-separated word in quotes so FTS5 treats them as
-/// phrase tokens. Drops anything that would make MATCH unhappy.
 fn sanitize_fts_query(q: &str) -> String {
     q.split_whitespace()
         .filter(|w| w.chars().any(|c| c.is_alphanumeric()))
@@ -658,10 +600,6 @@ mod tests {
         assert!(r.is_empty());
     }
 
-    // ─────────────────────────────────────────────────────────────────
-    // passive auto-surface: recall_by_file / recall_by_symbol
-    // ─────────────────────────────────────────────────────────────────
-
     fn obs_with_file(
         kind: ObservationKind,
         title: &str,
@@ -727,7 +665,6 @@ mod tests {
         ))
         .unwrap();
 
-        // Caller passes both variants; both obs should surface.
         let hits = mem
             .recall_by_file("/p", &["/home/x/proj/src/lib.rs", "src/lib.rs"], 10)
             .unwrap();
@@ -794,7 +731,6 @@ mod tests {
     fn recall_by_file_scopes_to_project() {
         let conn = fixture();
         let mem = engine_with(&conn);
-        // Project A
         mem.remember(obs_with_file(
             ObservationKind::Decision,
             "proj-a obs",
@@ -802,7 +738,6 @@ mod tests {
             "src/x.rs",
         ))
         .unwrap();
-        // Project B — same file path, different project_root
         let mut b = obs_with_file(ObservationKind::Decision, "proj-b obs", "b", "src/x.rs");
         b.project_root = "/q".into();
         mem.remember(b).unwrap();

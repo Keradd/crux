@@ -1,19 +1,9 @@
-//! JSON read / merge / write helpers shared across agent integrations.
-//!
-//! All agents covered by `crux setup` accept plain JSON config files
-//! (Claude Code / Claude Desktop / Cursor / Windsurf / Cline / Zed).
-//! JSONC comments are not supported; we surface a clear error so the
-//! user can strip them and retry.
-
 use std::fs;
 use std::path::Path;
 
 use crux_core::error::{CruxError, Result};
 use serde_json::{Map, Value};
 
-/// Read an existing JSON file, returning an empty object `{}` if the
-/// file is absent or empty. Errors out if the file contains malformed
-/// JSON (likely JSONC comments).
 pub fn read_or_empty(path: &Path) -> Result<Value> {
     if !path.exists() {
         return Ok(Value::Object(Map::new()));
@@ -34,9 +24,6 @@ pub fn read_or_empty(path: &Path) -> Result<Value> {
     })
 }
 
-/// Pretty-print `value` and write atomically (write to a temp file in
-/// the same directory, then rename). The trailing newline matches the
-/// convention used by every editor we target.
 pub fn write_atomic(path: &Path, value: &Value) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| CruxError::Io {
@@ -62,7 +49,6 @@ pub fn write_atomic(path: &Path, value: &Value) -> Result<()> {
     Ok(())
 }
 
-/// Ensure `value` is a JSON object; replace with `{}` if not.
 pub fn ensure_object(value: &mut Value) -> &mut Map<String, Value> {
     if !matches!(value, Value::Object(_)) {
         *value = Value::Object(Map::new());
@@ -70,8 +56,6 @@ pub fn ensure_object(value: &mut Value) -> &mut Map<String, Value> {
     value.as_object_mut().expect("ensured above")
 }
 
-/// Ensure `map[key]` is a JSON object, returning a mutable reference
-/// to it.
 pub fn ensure_object_at<'a>(
     map: &'a mut Map<String, Value>,
     key: &str,
@@ -85,8 +69,6 @@ pub fn ensure_object_at<'a>(
     entry.as_object_mut().expect("ensured above")
 }
 
-/// Ensure `map[key]` is a JSON array, returning a mutable reference
-/// to it.
 pub fn ensure_array_at<'a>(map: &'a mut Map<String, Value>, key: &str) -> &'a mut Vec<Value> {
     let entry = map
         .entry(key.to_string())
@@ -97,9 +79,6 @@ pub fn ensure_array_at<'a>(map: &'a mut Map<String, Value>, key: &str) -> &'a mu
     entry.as_array_mut().expect("ensured above")
 }
 
-/// Set `mcpServers.crux = {command, args: ["mcp"], env?}` idempotently.
-/// `env` is omitted from the written JSON when empty so the resulting
-/// document stays minimal. Returns whether the document changed.
 pub fn upsert_mcp_server_crux(
     value: &mut Value,
     command: &str,
@@ -129,16 +108,6 @@ pub fn upsert_mcp_server_crux(
     true
 }
 
-/// Set `mcp.servers.<name> = {command, args, env?}` idempotently —
-/// OpenClaw's MCP client registry schema
-/// (docs.openclaw.ai/cli/mcp#mcp-as-a-client-registry). Accepts any
-/// `mcp.servers.<name>` layout already on disk and preserves
-/// sibling servers (context7, docs, …).
-///
-/// OpenClaw's config supports JSON5 (comments + trailing commas);
-/// CRUX reads with strict `serde_json`, so configs that already
-/// contain JSON5-only syntax will error out at `read_or_empty`.
-/// Returns whether the document changed.
 pub fn upsert_openclaw_mcp_server(
     value: &mut Value,
     name: &str,
@@ -170,10 +139,6 @@ pub fn upsert_openclaw_mcp_server(
     true
 }
 
-/// Set `context_servers.crux = {command: {path, args, env}}`
-/// idempotently — Zed's MCP schema. Zed's schema always carries an
-/// `env` object (possibly empty), so we write it unconditionally.
-/// Returns whether the document changed.
 pub fn upsert_zed_context_server(
     value: &mut Value,
     command: &str,
@@ -200,10 +165,58 @@ pub fn upsert_zed_context_server(
     true
 }
 
-/// Insert a Claude Code hook spec idempotently. Walks existing arrays;
-/// if the same `matcher` exists, appends our `command` to its `hooks`
-/// array (skipping if already present). Returns whether the document
-/// changed.
+pub fn remove_claude_code_hook(
+    value: &mut Value,
+    event: &str,
+    matcher: &str,
+    command: &str,
+) -> bool {
+    let Some(root_map) = value.as_object_mut() else {
+        return false;
+    };
+    let Some(hooks_root) = root_map.get_mut("hooks").and_then(|v| v.as_object_mut()) else {
+        return false;
+    };
+    let Some(event_arr) = hooks_root.get_mut(event).and_then(|v| v.as_array_mut()) else {
+        return false;
+    };
+
+    let mut changed = false;
+    for entry in event_arr.iter_mut() {
+        if entry.get("matcher").and_then(|v| v.as_str()) != Some(matcher) {
+            continue;
+        }
+        let Some(inner) = entry.get_mut("hooks").and_then(|v| v.as_array_mut()) else {
+            continue;
+        };
+        let before = inner.len();
+        inner.retain(|h| h.get("command").and_then(|v| v.as_str()) != Some(command));
+        if inner.len() != before {
+            changed = true;
+        }
+    }
+
+    let before_entries = event_arr.len();
+    event_arr.retain(|entry| {
+        entry
+            .get("hooks")
+            .and_then(|v| v.as_array())
+            .is_some_and(|arr| !arr.is_empty())
+    });
+    if event_arr.len() != before_entries {
+        changed = true;
+    }
+
+    if event_arr.is_empty() {
+        hooks_root.remove(event);
+    }
+    if hooks_root.is_empty() {
+        root_map.remove("hooks");
+    }
+
+    changed
+}
+
 pub fn upsert_claude_code_hook(
     value: &mut Value,
     event: &str, // "PreToolUse" | "PostToolUse"
@@ -476,6 +489,134 @@ mod tests {
     }
 
     #[test]
+    fn remove_hook_noop_when_absent() {
+        let mut v = Value::Object(Map::new());
+        let changed = remove_claude_code_hook(&mut v, "PostToolUse", "Edit", "crux hygiene");
+        assert!(!changed);
+
+        let mut v2 = serde_json::json!({ "hooks": {} });
+        let changed = remove_claude_code_hook(&mut v2, "PostToolUse", "Edit", "crux hygiene");
+        assert!(!changed);
+    }
+
+    #[test]
+    fn remove_hook_removes_only_matching_command() {
+        let mut v = serde_json::json!({
+            "hooks": {
+                "PostToolUse": [
+                    {
+                        "matcher": "Edit|Write|MultiEdit",
+                        "hooks": [
+                            { "type": "command", "command": "crux hook post-tool" },
+                            { "type": "command", "command": "crux hygiene comments --check --changed-from-stdin" }
+                        ]
+                    }
+                ]
+            }
+        });
+        let changed = remove_claude_code_hook(
+            &mut v,
+            "PostToolUse",
+            "Edit|Write|MultiEdit",
+            "crux hygiene comments --check --changed-from-stdin",
+        );
+        assert!(changed);
+        let inner = v["hooks"]["PostToolUse"][0]["hooks"].as_array().unwrap();
+        assert_eq!(inner.len(), 1);
+        assert_eq!(inner[0]["command"].as_str().unwrap(), "crux hook post-tool");
+    }
+
+    #[test]
+    fn remove_hook_drops_empty_matcher_and_event() {
+        let mut v = serde_json::json!({
+            "hooks": {
+                "PostToolUse": [
+                    {
+                        "matcher": "Edit|Write|MultiEdit",
+                        "hooks": [
+                            { "type": "command", "command": "crux hygiene" }
+                        ]
+                    }
+                ]
+            }
+        });
+        let changed = remove_claude_code_hook(
+            &mut v,
+            "PostToolUse",
+            "Edit|Write|MultiEdit",
+            "crux hygiene",
+        );
+        assert!(changed);
+        assert!(
+            v.get("hooks").is_none(),
+            "empty hooks tree should be removed"
+        );
+    }
+
+    #[test]
+    fn remove_hook_is_idempotent() {
+        let mut v = serde_json::json!({
+            "hooks": {
+                "PostToolUse": [
+                    {
+                        "matcher": "Edit|Write|MultiEdit",
+                        "hooks": [
+                            { "type": "command", "command": "crux hygiene" }
+                        ]
+                    }
+                ]
+            }
+        });
+        let first = remove_claude_code_hook(
+            &mut v,
+            "PostToolUse",
+            "Edit|Write|MultiEdit",
+            "crux hygiene",
+        );
+        let second = remove_claude_code_hook(
+            &mut v,
+            "PostToolUse",
+            "Edit|Write|MultiEdit",
+            "crux hygiene",
+        );
+        assert!(first);
+        assert!(
+            !second,
+            "second remove on already-clean tree should be a no-op"
+        );
+    }
+
+    #[test]
+    fn remove_hook_preserves_sibling_event() {
+        let mut v = serde_json::json!({
+            "hooks": {
+                "PreToolUse": [
+                    { "matcher": "Read", "hooks": [{ "type": "command", "command": "crux hook pre-tool" }] }
+                ],
+                "PostToolUse": [
+                    {
+                        "matcher": "Edit|Write|MultiEdit",
+                        "hooks": [
+                            { "type": "command", "command": "crux hygiene" }
+                        ]
+                    }
+                ]
+            }
+        });
+        remove_claude_code_hook(
+            &mut v,
+            "PostToolUse",
+            "Edit|Write|MultiEdit",
+            "crux hygiene",
+        );
+        assert!(v["hooks"].get("PreToolUse").is_some());
+        assert!(
+            v["hooks"].get("PostToolUse").is_none(),
+            "emptied event should drop"
+        );
+    }
+
+    #[test]
     fn read_or_empty_missing_returns_object() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("nope.json");
@@ -496,7 +637,6 @@ mod tests {
     fn read_or_empty_invalid_errors() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("bad.json");
-        // JSONC-style comment is invalid plain JSON.
         std::fs::write(&p, "// comment\n{ \"x\": 1 }").unwrap();
         assert!(read_or_empty(&p).is_err());
     }

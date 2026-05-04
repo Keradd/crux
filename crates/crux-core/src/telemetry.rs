@@ -1,8 +1,3 @@
-//! Telemetry recording. All layers report through here so the Coach (Layer 9)
-//! has a single source of truth for compression effectiveness.
-//!
-//! No data ever leaves the local SQLite. This is by design.
-
 use rusqlite::{params, Connection};
 
 use crate::error::Result;
@@ -28,7 +23,6 @@ impl<'a> Event<'a> {
     }
 }
 
-/// Insert one telemetry row.
 pub fn record(conn: &Connection, e: &Event<'_>) -> Result<i64> {
     let now = chrono::Utc::now().timestamp();
     conn.execute(
@@ -56,7 +50,6 @@ pub fn record(conn: &Connection, e: &Event<'_>) -> Result<i64> {
     Ok(conn.last_insert_rowid())
 }
 
-/// Aggregate token savings per layer for the requested project.
 #[derive(Debug, Clone)]
 pub struct LayerStat {
     pub layer: String,

@@ -1,8 +1,3 @@
-//! `crux mcp` — run the MCP server on stdin/stdout.
-//!
-//! The server only emits structured JSON-RPC on stdout. All logging is
-//! sent to stderr through `tracing` so the protocol stream stays clean.
-
 use anyhow::Result;
 
 use crux_core::Runtime;

@@ -1,27 +1,3 @@
-//! Subprocess executor.
-//!
-//! Threats addressed at every isolation level:
-//!
-//! - **Time:** the child is killed after `timeout`; signaled by waiting
-//!   on a background thread.
-//! - **Output volume:** stdout/stderr are read into capped `Vec<u8>`s;
-//!   bytes beyond `max_output_bytes` are dropped and the truncation flag
-//!   is set so the caller knows.
-//! - **Environment:** by default only `PATH`, `HOME`, `LANG`, `LC_*`
-//!   pass through; everything else is stripped. The caller can opt back
-//!   into full inheritance with `inherit_env`.
-//! - **Working dir:** runs from `project_root` if supplied, else `/`.
-//!
-//! With [`IsolationLevel::Hard`] (Linux only) a
-//! [`std::os::unix::process::CommandExt::pre_exec`] hook additionally
-//! applies `setrlimit(RLIMIT_AS / RLIMIT_CPU / RLIMIT_NOFILE /
-//! RLIMIT_NPROC / RLIMIT_FSIZE)`; with the `landlock` cargo feature the
-//! same hook installs a filesystem ruleset that limits the child to
-//! read+execute over `/usr`, `/lib`, `/lib64`, `/bin`, `/etc` and the
-//! project root, plus read+write over `/tmp`. With the `seccomp` cargo
-//! feature a BPF filter restricts the child to a per-runtime syscall
-//! allowlist, blocking dangerous syscalls like `ptrace` and `mount`.
-
 use std::collections::HashMap;
 use std::io::{ErrorKind, Read};
 use std::process::{Command, Stdio};
@@ -35,7 +11,6 @@ use crate::types::{ExecRequest, ExecResult, IsolationLevel, RuntimeKind};
 
 const ALLOWED_ENV_KEYS: &[&str] = &["PATH", "HOME", "LANG", "TZ"];
 
-/// One-shot subprocess runner. Stateless; create per call.
 pub struct Executor;
 
 impl Executor {
@@ -44,11 +19,6 @@ impl Executor {
     }
 
     pub fn execute(&self, req: &ExecRequest) -> Result<ExecResult> {
-        // Agent-permission gate (Layer 7 deny-list sync). Refuses to
-        // spawn if the caller attached a `Permissions` bundle that
-        // matches the runtime+code pair under a deny rule. Bypassed
-        // entirely when `req.permissions` is `None` so the legacy
-        // contract is preserved.
         if let Some(perms) = &req.permissions {
             if let PermDecision::Deny(rule) = perms.evaluate(req.runtime, &req.code) {
                 return Err(CruxError::other(format!(
@@ -73,8 +43,6 @@ impl Executor {
             }
             RuntimeKind::Bash => {
                 let mut c = Command::new(interpreter);
-                // `set -u` to surface undefined-var bugs; `pipefail` so we
-                // don't swallow errors mid-pipeline.
                 let wrapped = format!("set -uo pipefail\n{}", req.code);
                 c.arg("-c");
                 c.arg(wrapped);
@@ -92,14 +60,12 @@ impl Executor {
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
-        // Working directory.
         if let Some(root) = &req.project_root {
             if root.is_dir() {
                 cmd.current_dir(root);
             }
         }
 
-        // Environment scrubbing.
         if !req.inherit_env {
             cmd.env_clear();
             for k in ALLOWED_ENV_KEYS {
@@ -112,9 +78,6 @@ impl Executor {
             cmd.env(k, v);
         }
 
-        // Hard isolation: install the Linux-only pre_exec hook and record
-        // which primitives were engaged. On non-Linux targets or when the
-        // user stayed on Portable, `isolation_applied` stays empty.
         let isolation_applied = apply_hard_isolation(&mut cmd, req);
 
         let start = Instant::now();
@@ -131,12 +94,9 @@ impl Executor {
         let stderr = child.stderr.take();
         let max_bytes = req.max_output_bytes;
 
-        // Stream stdout / stderr in background threads with hard caps.
         let stdout_handle = stdout.map(|s| spawn_capture(s, max_bytes));
         let stderr_handle = stderr.map(|s| spawn_capture(s, max_bytes));
 
-        // Wait with timeout. We can't tokio here because the rest of the
-        // codebase is sync; emulate via a poll loop with parking.
         let timed_out = wait_with_timeout(&mut child, req.timeout)?;
         let exit_code = if timed_out {
             None
@@ -177,13 +137,6 @@ impl Default for Executor {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// Hard isolation glue
-// ─────────────────────────────────────────────────────────────────────────
-
-/// Decorate `cmd` with whatever hard-isolation primitives the current
-/// target + compile-time features can provide, and return the labels of
-/// the primitives that were actually engaged. Empty vector ⇒ portable.
 fn apply_hard_isolation(cmd: &mut Command, req: &ExecRequest) -> Vec<String> {
     if req.isolation != IsolationLevel::Hard {
         return Vec::new();
@@ -202,9 +155,6 @@ mod linux {
         let mut applied = Vec::new();
         let mut limits = HardLimits::default();
         if limits.cpu_seconds == 0 {
-            // Give the child the wall-clock timeout + a small cushion
-            // before SIGXCPU fires, so `wait_with_timeout` still owns the
-            // authoritative kill path.
             let secs = req.timeout.as_secs().max(1);
             limits.cpu_seconds = secs.saturating_add(2);
         }
@@ -229,8 +179,6 @@ mod linux {
         let runtime = req.runtime;
 
         // SAFETY: the pre_exec closure runs after fork() and before
-        // exec(). It must only use async-signal-safe operations. `libc`
-        // syscalls via direct FFI satisfy that.
         unsafe {
             let limits = limits;
             cmd.pre_exec(move || {
@@ -238,16 +186,12 @@ mod linux {
                 #[cfg(feature = "landlock")]
                 {
                     if let Err(e) = apply_landlock(&landlock_roots) {
-                        // Degrade rather than fail the spawn: landlock is
-                        // advisory and the kernel may not support it.
                         tracing::warn!(error = %e, "landlock ruleset not enforced");
                     }
                 }
                 #[cfg(feature = "seccomp")]
                 {
                     if let Err(e) = crate::seccomp::install_seccomp_filter(runtime) {
-                        // Degrade rather than fail the spawn: seccomp is
-                        // advisory and the kernel may not support it.
                         tracing::warn!(error = %e, "seccomp filter not enforced");
                     }
                 }
@@ -272,9 +216,6 @@ mod linux {
         Ok(())
     }
 
-    // `setrlimit`'s resource argument is `__rlimit_resource_t` (= c_uint) on
-    // glibc but plain `c_int` on musl/uclibc/Android. Alias to the right type
-    // per target so the helper compiles on every Linux libc.
     #[cfg(target_env = "gnu")]
     type RlimitResource = libc::__rlimit_resource_t;
     #[cfg(not(target_env = "gnu"))]
@@ -367,7 +308,6 @@ fn spawn_capture<R: Read + Send + 'static>(
                             buf.extend_from_slice(&chunk[..take]);
                         }
                         truncated = true;
-                        // Drain the rest so the child can exit.
                         let mut sink = [0u8; 8192];
                         while reader.read(&mut sink).unwrap_or(0) > 0 {}
                         break;
@@ -401,7 +341,6 @@ fn wait_with_timeout(child: &mut std::process::Child, timeout: Duration) -> Resu
     }
 }
 
-// Silence dead_code warnings for utilities the public API doesn't need yet.
 #[allow(dead_code)]
 fn _allowed_env_keys_static_check() -> &'static [&'static str] {
     ALLOWED_ENV_KEYS
@@ -415,12 +354,6 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    /// Probe the runtime by actually executing a tiny program and
-    /// checking the output, not just `--version`. On Windows a missing
-    /// `python3.exe` resolves to a Microsoft Store launcher stub that
-    /// exits 0 with empty stdout for every invocation, so a `--version`
-    /// probe falsely reports success and the real test then fails with
-    /// `"" != "4"`. Verifying via stdout content side-steps the stub.
     fn probe_runtime(interpreter: &str, args: &[&str], expected: &str) -> bool {
         let out = match std::process::Command::new(interpreter).args(args).output() {
             Ok(o) => o,
@@ -510,11 +443,8 @@ mod tests {
     fn unknown_interpreter_is_a_clean_error() {
         let exec = Executor::new();
         let mut req = ExecRequest::new(RuntimeKind::Node, "console.log(1)");
-        // Force PATH to nothing so node lookup definitely fails.
         req.env.insert("PATH".into(), "".into());
         req.inherit_env = false;
-        // Some systems still resolve via builtin paths; only assert that
-        // *if* we get an error, it carries a useful message.
         if let Err(e) = exec.execute(&req) {
             let msg = format!("{e}");
             assert!(msg.contains("interpreter") || msg.contains("spawn"));
@@ -535,9 +465,6 @@ mod tests {
 
     #[test]
     fn agent_permission_deny_rule_blocks_before_spawn() {
-        // No `require_bash` guard — the deny check fires before we
-        // attempt to exec anything, so the test runs even on hosts
-        // without bash.
         use crate::permissions::{PermRule, PermScope, PermSource, Permissions};
         let exec = Executor::new();
         let perms = Permissions::new(
@@ -560,9 +487,6 @@ mod tests {
 
     #[test]
     fn agent_permission_does_not_block_unrelated_runtime() {
-        // A `Bash(...)` deny must NOT affect Python execution. Without
-        // the runtime-aware mapping in PermRule::maps_to_runtime, this
-        // would over-block.
         if !require_python() {
             return;
         }
@@ -590,18 +514,13 @@ mod tests {
         let exec = Executor::new();
         let perms = Permissions::new(
             vec![PermRule::parse("Bash(rm *)", PermSource::ClaudeCode, PermScope::Global).unwrap()],
-            vec![
-                // Project-scoped allow re-enables a specific rm shape.
-                PermRule::parse(
-                    "Bash(rm /tmp/scratch*)",
-                    PermSource::ClaudeCode,
-                    PermScope::Project,
-                )
-                .unwrap(),
-            ],
+            vec![PermRule::parse(
+                "Bash(rm /tmp/scratch*)",
+                PermSource::ClaudeCode,
+                PermScope::Project,
+            )
+            .unwrap()],
         );
-        // Need a real (and harmless) rm target: create + delete a
-        // tempfile we own, asserting the allow rule wins over deny.
         let dir = tempfile::tempdir().unwrap();
         let scratch = dir.path().join("scratch_l7_perm_test");
         std::fs::write(&scratch, "x").unwrap();
@@ -609,11 +528,8 @@ mod tests {
             "rm /tmp/scratch_nonexistent_l7 2>/dev/null; rm '{}'",
             scratch.display()
         );
-        // The deny rule's pattern (`rm `) matches; the allow rule's
-        // pattern (`rm /tmp/scratch`) also matches. Allow wins.
         let req = ExecRequest::new(RuntimeKind::Bash, code).with_permissions(perms);
         let res = exec.execute(&req).unwrap();
-        // Real rm of the tempfile should succeed (exit 0).
         assert_eq!(res.exit_code, Some(0), "stderr: {}", res.stderr);
     }
 
@@ -623,9 +539,6 @@ mod tests {
             return;
         }
         let exec = Executor::new();
-        // A request with `permissions = None` must behave EXACTLY like
-        // the legacy contract — no rule lookups, no overhead, no risk
-        // of blocking benign code that happens to contain `rm` substrings.
         let req = ExecRequest::new(RuntimeKind::Bash, "echo 'rm -rf /' # printed not run");
         let res = exec.execute(&req).unwrap();
         assert_eq!(res.exit_code, Some(0));
@@ -638,10 +551,6 @@ mod tests {
             return;
         }
         let exec = Executor::new();
-        // `ulimit -v` prints RLIMIT_AS as kilobytes. Under hard isolation
-        // we cap address space at 512 MiB = 524288 KiB, so the readout
-        // must be ≤ that. Under portable isolation it's usually
-        // `unlimited`.
         let mut req = ExecRequest::new(
             RuntimeKind::Bash,
             "ulimit -v; echo ---; ulimit -n; echo ---; ulimit -u",
@@ -676,11 +585,6 @@ mod tests {
         if !require_bash() {
             return;
         }
-        // Try to spawn more child processes than RLIMIT_NPROC allows.
-        // Under hard isolation the child bash should fail to fork after
-        // the cap and exit non-zero with `Resource temporarily
-        // unavailable` messages on stderr. Under portable isolation the
-        // loop would run to completion cleanly.
         let exec = Executor::new();
         let mut req = ExecRequest::new(
             RuntimeKind::Bash,
@@ -689,9 +593,6 @@ mod tests {
         req.isolation = IsolationLevel::Hard;
         req.timeout = std::time::Duration::from_secs(3);
         let res = exec.execute(&req).unwrap();
-        // The script may finish (timed_out=false) or hit the wall clock
-        // cap — either is acceptable, as long as the fork limit stopped
-        // it from unbounded spawning. We just assert rlimits engaged.
         assert!(res.isolation_applied.contains(&"rlimits".to_string()));
     }
 

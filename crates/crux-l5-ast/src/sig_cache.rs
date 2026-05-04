@@ -1,40 +1,11 @@
-//! Persistent cache for per-file [`FileTypes`] signatures.
-//!
-//! L5.12 introduced `ProjectFileTypes`, a project-wide aggregate of
-//! every file's function / method / enum / struct signatures used by
-//! phase 2 of the indexer to resolve cross-file receiver typing.
-//! Building that aggregate requires a pass over every file's source
-//! — even unchanged ones — which pushed no-op `crux index` from
-//! ~170 ms to ~560 ms on the CRUX repo.
-//!
-//! This module backs the aggregate with `ast_file_signatures`
-//! (migration 009) so phase 1 can deserialize a previously-parsed
-//! file's [`FileTypes`] from the DB when its SHA-256 hash is
-//! unchanged. Schema drift is handled by a [`SCHEMA_VERSION`]
-//! constant baked into every row: if the layout ever changes, rows
-//! with a mismatched version silently fail the `SELECT` and the
-//! indexer falls back to re-parsing + re-writing the entry. No
-//! migration is required when the schema bumps.
-
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crux_core::error::{CruxError, Result};
 
 use crate::extract::FileTypes;
 
-/// Bincode format version for the serialized [`FileTypes`] payload.
-///
-/// Bump whenever the `FileTypes` layout changes so stale rows get
-/// ignored instead of deserialized against the wrong shape.
-///
-/// Version log:
-///   1 — L5.12.5 initial layout.
-///   2 — L5.13a added `enum_struct_variants`.
 pub const SCHEMA_VERSION: u32 = 2;
 
-/// Look up a cached [`FileTypes`] payload by (project, file_path) and
-/// expected content hash. Returns `Ok(None)` on any miss: absent row,
-/// hash mismatch (file was modified), or schema drift.
 pub fn load(
     conn: &Connection,
     project_root: &str,
@@ -57,8 +28,6 @@ pub fn load(
         Some(bytes) => match bincode::deserialize::<FileTypes>(&bytes) {
             Ok(ft) => Ok(Some(ft)),
             Err(e) => {
-                // Corrupt blob: delete the row so the next run re-writes
-                // a fresh one and don't propagate the error.
                 tracing::warn!(
                     file = %file_path,
                     error = %e,
@@ -76,8 +45,6 @@ pub fn load(
     }
 }
 
-/// Persist a fresh [`FileTypes`] payload for `(project, file_path)`.
-/// Replaces any existing row (different hash / older schema version).
 pub fn store(
     conn: &Connection,
     project_root: &str,
@@ -113,8 +80,6 @@ pub fn store(
     Ok(())
 }
 
-/// Wipe every cached signature for a project. Called from `crux index
-/// --force` alongside the graph + snapshot purge.
 pub fn purge_project(conn: &Connection, project_root: &str) -> Result<()> {
     conn.execute(
         "DELETE FROM ast_file_signatures WHERE project_root = ?",
@@ -123,8 +88,6 @@ pub fn purge_project(conn: &Connection, project_root: &str) -> Result<()> {
     Ok(())
 }
 
-/// Drop signature rows for a specific set of file paths (typically
-/// files that were removed from disk between indexes).
 pub fn purge_files(conn: &Connection, project_root: &str, file_paths: &[String]) -> Result<()> {
     if file_paths.is_empty() {
         return Ok(());

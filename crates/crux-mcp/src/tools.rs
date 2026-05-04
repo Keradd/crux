@@ -1,10 +1,3 @@
-//! Tool definitions exposed via MCP. Each tool maps a JSON `arguments`
-//! object to one of CRUX's internal layer APIs and returns a textual
-//! `CallToolResult`.
-//!
-//! Adding a tool: append an entry to [`all_tools`] with its schema, then
-//! a match arm in `dispatch::call`.
-
 use serde_json::{json, Value};
 
 use crate::protocol::ToolDefinition;

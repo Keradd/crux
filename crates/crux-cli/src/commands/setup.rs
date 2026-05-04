@@ -1,12 +1,3 @@
-//! `crux setup [<agent>]` — register CRUX as an MCP server (and
-//! optional hooks / slash commands) in third-party AI agents.
-//!
-//! Flow:
-//!   crux setup                  # auto-detect installed agents → integrate each
-//!   crux setup claude-code      # explicit single agent
-//!   crux setup --list           # show supported agents (no writes)
-//!   crux setup --dry-run        # preview without touching the filesystem
-
 use std::collections::BTreeMap;
 
 use anyhow::{anyhow, Context, Result};
@@ -21,53 +12,39 @@ use crate::Cli;
 
 #[derive(Debug, ClapArgs)]
 pub struct Args {
-    /// Which agent(s) to integrate. Omit to auto-detect installed
-    /// agents on this machine. Repeatable.
     #[arg(value_name = "AGENT")]
     pub agents: Vec<String>,
 
-    /// List supported agents and exit (no writes).
     #[arg(long)]
     pub list: bool,
 
-    /// Show what would be written; do not modify any files.
     #[arg(long)]
     pub dry_run: bool,
 
-    /// Where to install the integration. `auto` (default) prefers
-    /// per-user (global) configs.
     #[arg(long, value_parser = parse_scope, default_value = "auto")]
     pub scope: Scope,
 
-    /// Override the path used inside MCP entries (default: absolute
-    /// path of the running `crux` binary).
     #[arg(long, value_name = "PATH")]
     pub crux_path: Option<String>,
 
-    /// Skip the Claude Code PreToolUse / PostToolUse hooks
-    /// (`crux hook pre-tool` / `post-tool`). Default: hooks installed.
     #[arg(long)]
     pub no_hooks: bool,
 
-    /// Skip the `/crux` Claude Code slash-command file
-    /// (`~/.claude/commands/crux.md`). Default: skill installed.
     #[arg(long)]
     pub no_skill: bool,
 
-    /// Skip the automatic `CRUX_PROJECT=<project_root>` env var the
-    /// MCP entry would otherwise carry. Useful when you want the
-    /// MCP server to autodetect project at every launch.
+    #[arg(long)]
+    pub enable_hygiene_hook: bool,
+
+    #[arg(long, conflicts_with = "enable_hygiene_hook")]
+    pub disable_hygiene_hook: bool,
+
     #[arg(long)]
     pub no_project_env: bool,
 
-    /// Extra environment variables to record in the MCP entry's `env`
-    /// block. Repeatable: `--env KEY=VAL --env OTHER=VAL2`. Use
-    /// `--env CRUX_PROJECT=/path` to override the auto-set value.
     #[arg(long = "env", value_name = "KEY=VAL", value_parser = parse_env_kv)]
     pub envs: Vec<(String, String)>,
 
-    /// Overwrite existing slash-command skill file. (MCP / hook entries
-    /// are merged idempotently regardless of this flag.)
     #[arg(long)]
     pub force: bool,
 }
@@ -126,9 +103,6 @@ pub fn run(cli: &Cli, args: &Args) -> Result<()> {
         out
     };
 
-    // Build env map: start with auto-set CRUX_PROJECT (unless opted
-    // out), then overlay any explicit --env KEY=VAL entries so the
-    // user can override.
     let mut env: BTreeMap<String, String> = BTreeMap::new();
     if !args.no_project_env {
         env.insert(
@@ -150,6 +124,8 @@ pub fn run(cli: &Cli, args: &Args) -> Result<()> {
             env: env.clone(),
             install_hooks: agent.supports_hooks() && !args.no_hooks,
             install_skill: agent.supports_slash_command() && !args.no_skill,
+            install_hygiene_hook: agent.supports_hooks() && args.enable_hygiene_hook,
+            remove_hygiene_hook: agent.supports_hooks() && args.disable_hygiene_hook,
             dry_run: args.dry_run,
             force: args.force,
         };

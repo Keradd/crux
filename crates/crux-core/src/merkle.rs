@@ -1,22 +1,3 @@
-//! File-level Merkle-ish sync shared by every layer that walks the
-//! project tree.
-//!
-//! The reindexer used to re-walk every project file on every call and
-//! lean on downstream content-hash dedup to short-circuit inserts.
-//! [`MerkleSync`] compares the on-disk SHA-256 of each tracked file
-//! against the last committed snapshot in the `file_snapshots` table
-//! and tells the caller exactly which paths are added / modified /
-//! removed / unchanged.
-//!
-//! Multiple layers (Layer 5 AST ingestion, Layer 6 chunk indexing, …)
-//! share the table; each identifies its own view with a `scope` string
-//! (`"ast"`, `"chunks"`, …). Rows for different scopes don't interact.
-//!
-//! Design doc: §7.6 ("Merkle sync"). The claude-context reference uses
-//! a full DAG keyed by path; we collapse that to a flat per-file hash
-//! map because the retrieval unit we care about is the file, not an
-//! interior tree node.
-
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
@@ -26,24 +7,17 @@ use tracing::warn;
 
 use crate::error::Result;
 
-/// Well-known scope for Layer 6 (chunks + embeddings).
 pub const SCOPE_CHUNKS: &str = "chunks";
-/// Well-known scope for Layer 5 (AST graph ingestion).
 pub const SCOPE_AST: &str = "ast";
 
-/// Persisted state for a single tracked file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileSnapshot {
-    /// Project-relative path (forward slashes are not enforced — we
-    /// store whatever the caller supplied).
     pub file_path: String,
-    /// Hex-encoded SHA-256 of the file bytes.
     pub content_hash: String,
     pub size_bytes: u64,
     pub mtime_epoch: i64,
 }
 
-/// Result of comparing a fresh scan against the stored snapshot.
 #[derive(Debug, Default, Clone)]
 pub struct FileChangeSet {
     pub added: Vec<String>,
@@ -53,8 +27,6 @@ pub struct FileChangeSet {
 }
 
 impl FileChangeSet {
-    /// Any path that either did not exist in the previous snapshot or
-    /// changed content. Callers use this to scope downstream work.
     pub fn changed(&self) -> HashSet<String> {
         let mut out = HashSet::with_capacity(self.added.len() + self.modified.len());
         out.extend(self.added.iter().cloned());
@@ -67,8 +39,6 @@ impl FileChangeSet {
     }
 }
 
-/// Per-(project, scope) snapshot manager backed by the `file_snapshots`
-/// table.
 pub struct MerkleSync<'c> {
     conn: &'c Connection,
     project_root: String,
@@ -76,9 +46,6 @@ pub struct MerkleSync<'c> {
 }
 
 impl<'c> MerkleSync<'c> {
-    /// Create a handle for the given project and scope. Use the
-    /// `SCOPE_CHUNKS` / `SCOPE_AST` constants (or any other stable
-    /// string) to separate layer namespaces.
     pub fn new(conn: &'c Connection, project_root: &Path, scope: &str) -> Self {
         Self {
             conn,
@@ -91,9 +58,6 @@ impl<'c> MerkleSync<'c> {
         &self.scope
     }
 
-    /// Hash a single file on disk. Returns `Ok(None)` when the path does
-    /// not resolve to a regular file or the read fails (the caller
-    /// treats that the same as "file does not exist").
     pub fn hash_file(abs: &Path) -> Result<Option<FileSnapshot>> {
         let meta = match std::fs::metadata(abs) {
             Ok(m) => m,
@@ -130,9 +94,6 @@ impl<'c> MerkleSync<'c> {
         }))
     }
 
-    /// Hash the given project-relative paths. Paths that cannot be read
-    /// are silently skipped — they will surface as `removed` in the
-    /// diff against the previous snapshot.
     pub fn scan<I, S>(
         &self,
         project_root: &Path,
@@ -157,7 +118,6 @@ impl<'c> MerkleSync<'c> {
         Ok(out)
     }
 
-    /// Load the last committed snapshot for this project + scope.
     pub fn load(&self) -> Result<HashMap<String, FileSnapshot>> {
         let mut stmt = self.conn.prepare(
             "SELECT file_path, content_hash, size_bytes, mtime_epoch
@@ -180,8 +140,6 @@ impl<'c> MerkleSync<'c> {
         Ok(map)
     }
 
-    /// Fetch the stored hash for a single path, if any. Cheap enough to
-    /// call inside the per-file loop of an incremental indexer.
     pub fn hash_for(&self, file_path: &str) -> Result<Option<String>> {
         use rusqlite::OptionalExtension;
         Ok(self
@@ -195,8 +153,6 @@ impl<'c> MerkleSync<'c> {
             .optional()?)
     }
 
-    /// Diff a fresh scan against a stored snapshot. Pure function —
-    /// does not touch the database.
     pub fn diff(
         current: &HashMap<String, FileSnapshot>,
         stored: &HashMap<String, FileSnapshot>,
@@ -223,9 +179,6 @@ impl<'c> MerkleSync<'c> {
         set
     }
 
-    /// Upsert every entry in `current` into `file_snapshots`. Rows for
-    /// paths not present in `current` are left alone — call
-    /// [`MerkleSync::remove`] or [`MerkleSync::purge`] for those.
     pub fn commit(&self, current: &HashMap<String, FileSnapshot>) -> Result<()> {
         if current.is_empty() {
             return Ok(());
@@ -258,8 +211,6 @@ impl<'c> MerkleSync<'c> {
         Ok(())
     }
 
-    /// Upsert a single snapshot row. Handy for incremental indexers
-    /// that want to commit as they go instead of batching.
     pub fn commit_one(&self, snap: &FileSnapshot) -> Result<()> {
         let now = chrono::Utc::now().timestamp();
         self.conn.execute(
@@ -285,8 +236,6 @@ impl<'c> MerkleSync<'c> {
         Ok(())
     }
 
-    /// Remove the named paths from this project's scope-partitioned
-    /// snapshot.
     pub fn remove(&self, paths: &[String]) -> Result<()> {
         if paths.is_empty() {
             return Ok(());
@@ -303,8 +252,6 @@ impl<'c> MerkleSync<'c> {
         Ok(())
     }
 
-    /// Drop the entire snapshot for this project + scope. Used by
-    /// `--force`.
     pub fn purge(&self) -> Result<()> {
         self.conn.execute(
             "DELETE FROM file_snapshots WHERE project_root = ? AND scope = ?",
@@ -357,13 +304,11 @@ mod tests {
         assert_eq!(first.len(), 3);
         sync.commit(&first).unwrap();
 
-        // No changes yet.
         let reloaded = sync.load().unwrap();
         let diff_same = MerkleSync::diff(&first, &reloaded);
         assert!(diff_same.is_empty());
         assert_eq!(diff_same.unchanged.len(), 3);
 
-        // Modify one, add one, remove one.
         write(dir.path(), "b.md", "bravo TWO edited");
         write(dir.path(), "d.md", "delta");
         std::fs::remove_file(dir.path().join("a.md")).unwrap();

@@ -1,5 +1,3 @@
-//! `crux index` / `crux find` / `crux symbol` / `crux impact` — Layer 5 surface.
-
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
@@ -13,11 +11,8 @@ use crate::Cli;
 
 #[derive(Debug, ClapArgs)]
 pub struct IndexArgs {
-    /// Override project root (default: autodetect).
     #[arg(long)]
     pub dir: Option<PathBuf>,
-    /// Drop the AST graph + Merkle snapshot for this project before
-    /// walking. Equivalent to `crux reindex --force` on Layer 6.
     #[arg(long)]
     pub force: bool,
 }
@@ -38,7 +33,6 @@ pub struct FindArgs {
 pub struct SymbolArgs {
     #[arg(value_name = "QUALIFIED_NAME")]
     pub qn: String,
-    /// Show source body inline.
     #[arg(long)]
     pub source: bool,
 }
@@ -52,10 +46,6 @@ pub struct ImpactArgs {
     #[arg(long, default_value_t = 100)]
     pub max: u32,
 }
-
-// ─────────────────────────────────────────────────────────────────────────
-// crux index
-// ─────────────────────────────────────────────────────────────────────────
 
 pub fn run_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
     let project = args
@@ -96,10 +86,6 @@ pub fn run_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
     }
     Ok(())
 }
-
-// ─────────────────────────────────────────────────────────────────────────
-// crux find
-// ─────────────────────────────────────────────────────────────────────────
 
 pub fn run_find(cli: &Cli, args: &FindArgs) -> Result<()> {
     let project = resolve_project_root(cli.project.as_deref());
@@ -148,10 +134,6 @@ pub fn run_find(cli: &Cli, args: &FindArgs) -> Result<()> {
     Ok(())
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// crux symbol
-// ─────────────────────────────────────────────────────────────────────────
-
 pub fn run_symbol(cli: &Cli, args: &SymbolArgs) -> Result<()> {
     let project = resolve_project_root(cli.project.as_deref());
     let runtime = Runtime::open(Some(project.clone()))?;
@@ -190,10 +172,6 @@ pub fn run_symbol(cli: &Cli, args: &SymbolArgs) -> Result<()> {
     }
     Ok(())
 }
-
-// ─────────────────────────────────────────────────────────────────────────
-// crux impact
-// ─────────────────────────────────────────────────────────────────────────
 
 pub fn run_impact(cli: &Cli, args: &ImpactArgs) -> Result<()> {
     let project = resolve_project_root(cli.project.as_deref());

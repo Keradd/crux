@@ -1,39 +1,20 @@
-//! Per-agent integration logic.
-//!
-//! All six supported agents share the same overall shape:
-//! 1. Locate the right config file for the chosen scope.
-//! 2. Read it (or fall back to an empty object if absent).
-//! 3. Merge our MCP entry idempotently.
-//! 4. Optionally apply agent-specific extras (Claude Code hooks +
-//!    slash command).
-//! 5. Write back atomically.
-
 use std::path::{Path, PathBuf};
 
 use crux_core::error::{CruxError, Result};
 
 use super::json_merge::{
-    read_or_empty, upsert_claude_code_hook, upsert_mcp_server_crux, upsert_openclaw_mcp_server,
-    upsert_zed_context_server, write_atomic,
+    read_or_empty, remove_claude_code_hook, upsert_claude_code_hook, upsert_mcp_server_crux,
+    upsert_openclaw_mcp_server, upsert_zed_context_server, write_atomic,
 };
 use super::skill::CLAUDE_CODE_SKILL;
 use super::yaml_merge;
 use super::{Action, AgentKind, IntegrateOptions, IntegrateReport, Scope};
 
-/// Name CRUX uses inside agent MCP registries. Kept as a module-level
-/// constant so the OpenClaw / Hermes helpers (which accept a name
-/// parameter because their schemas take a server-name key path)
-/// agree with the hard-coded `crux` used by Claude / Cursor /
-/// Windsurf / Cline / Zed upserts.
 const CRUX_SERVER_NAME: &str = "crux";
 
 const HOOK_PRE_MATCHER: &str = "Read";
 const HOOK_POST_MATCHER: &str = "Edit|Write|MultiEdit";
 
-/// Cheap "is this agent installed?" probe based on canonical config
-/// paths. False negatives are possible (a brand-new install with no
-/// config dir yet); they only mean `auto_detect` skips the agent —
-/// `crux setup <agent>` still works, it just creates the directory.
 pub fn is_installed(kind: AgentKind) -> bool {
     let Ok(home) = super::home_dir() else {
         return false;
@@ -72,10 +53,6 @@ pub fn integrate(opts: &IntegrateOptions) -> Result<IntegrateReport> {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// Claude Code
-// ─────────────────────────────────────────────────────────────────────────
-
 fn integrate_claude_code(opts: &IntegrateOptions) -> Result<IntegrateReport> {
     let mut report = IntegrateReport::new(opts.agent);
 
@@ -104,6 +81,28 @@ fn integrate_claude_code(opts: &IntegrateOptions) -> Result<IntegrateReport> {
             "PostToolUse",
             HOOK_POST_MATCHER,
             &post_cmd,
+            opts.dry_run,
+            &mut report,
+        )?;
+    }
+
+    let hygiene_cmd = hygiene_hook_command(&opts.crux_path);
+    if opts.install_hygiene_hook {
+        apply_hook(
+            &settings,
+            "PostToolUse",
+            HOOK_POST_MATCHER,
+            &hygiene_cmd,
+            opts.dry_run,
+            &mut report,
+        )?;
+    }
+    if opts.remove_hygiene_hook {
+        apply_hook_remove(
+            &settings,
+            "PostToolUse",
+            HOOK_POST_MATCHER,
+            &hygiene_cmd,
             opts.dry_run,
             &mut report,
         )?;
@@ -162,10 +161,6 @@ fn claude_code_skill_path(opts: &IntegrateOptions) -> Result<PathBuf> {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// Claude Desktop
-// ─────────────────────────────────────────────────────────────────────────
-
 fn integrate_claude_desktop(opts: &IntegrateOptions) -> Result<IntegrateReport> {
     let mut report = IntegrateReport::new(opts.agent);
     let path = claude_desktop_config_path()?;
@@ -181,7 +176,6 @@ fn claude_desktop_candidate_dirs(home: &Path) -> Vec<PathBuf> {
             .unwrap_or_else(|| home.join("AppData/Roaming"))
             .join("Claude")]
     } else {
-        // Linux is unofficial but Claude Desktop (Electron) writes here.
         vec![home.join(".config").join("Claude")]
     }
 }
@@ -194,10 +188,6 @@ fn claude_desktop_config_path() -> Result<PathBuf> {
         .expect("candidate list never empty")
         .join("claude_desktop_config.json"))
 }
-
-// ─────────────────────────────────────────────────────────────────────────
-// Cursor
-// ─────────────────────────────────────────────────────────────────────────
 
 fn integrate_cursor(opts: &IntegrateOptions) -> Result<IntegrateReport> {
     let mut report = IntegrateReport::new(opts.agent);
@@ -213,10 +203,6 @@ fn cursor_config_path(opts: &IntegrateOptions) -> Result<PathBuf> {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// Windsurf (Cascade)
-// ─────────────────────────────────────────────────────────────────────────
-
 fn integrate_windsurf(opts: &IntegrateOptions) -> Result<IntegrateReport> {
     let mut report = IntegrateReport::new(opts.agent);
     let path = super::home_dir()?
@@ -227,10 +213,6 @@ fn integrate_windsurf(opts: &IntegrateOptions) -> Result<IntegrateReport> {
     Ok(report)
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// Cline (VS Code extension `saoudrizwan.claude-dev`)
-// ─────────────────────────────────────────────────────────────────────────
-
 fn integrate_cline(opts: &IntegrateOptions) -> Result<IntegrateReport> {
     let mut report = IntegrateReport::new(opts.agent);
     let candidates = cline_candidate_dirs(&super::home_dir()?);
@@ -238,8 +220,6 @@ fn integrate_cline(opts: &IntegrateOptions) -> Result<IntegrateReport> {
         .into_iter()
         .find(|p| p.exists())
         .or_else(|| {
-            // Fall back to the OS-default path even if it doesn't exist
-            // yet — the user may be running setup before opening Cline.
             cline_candidate_dirs(&super::home_dir().ok()?)
                 .into_iter()
                 .next()
@@ -265,10 +245,6 @@ fn cline_candidate_dirs(home: &Path) -> Vec<PathBuf> {
         vec![home.join(".config/Code/User").join(leaf)]
     }
 }
-
-// ─────────────────────────────────────────────────────────────────────────
-// Zed
-// ─────────────────────────────────────────────────────────────────────────
 
 fn integrate_zed(opts: &IntegrateOptions) -> Result<IntegrateReport> {
     let mut report = IntegrateReport::new(opts.agent);
@@ -302,10 +278,6 @@ fn zed_candidate_dirs(home: &Path) -> Vec<PathBuf> {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// OpenClaw (docs.openclaw.ai)
-// ─────────────────────────────────────────────────────────────────────────
-
 fn integrate_openclaw(opts: &IntegrateOptions) -> Result<IntegrateReport> {
     let mut report = IntegrateReport::new(opts.agent);
     let path = openclaw_config_path(opts)?;
@@ -313,10 +285,6 @@ fn integrate_openclaw(opts: &IntegrateOptions) -> Result<IntegrateReport> {
     Ok(report)
 }
 
-/// Honor `$OPENCLAW_CONFIG_PATH` first (matches the Gateway's own
-/// lookup rule), then fall back to `~/.openclaw/openclaw.json` for
-/// the global scope or the project-local equivalent for `--scope
-/// project`.
 fn openclaw_config_path(opts: &IntegrateOptions) -> Result<PathBuf> {
     if let Some(p) = std::env::var_os("OPENCLAW_CONFIG_PATH") {
         return Ok(PathBuf::from(p));
@@ -340,10 +308,6 @@ fn apply_openclaw_mcp_entry(
     let changed = upsert_openclaw_mcp_server(&mut value, CRUX_SERVER_NAME, command, env);
     finalize_change(path, &value, changed, dry_run, report)
 }
-
-// ─────────────────────────────────────────────────────────────────────────
-// Hermes Agent (hermes-agent.nousresearch.com)
-// ─────────────────────────────────────────────────────────────────────────
 
 fn integrate_hermes(opts: &IntegrateOptions) -> Result<IntegrateReport> {
     let mut report = IntegrateReport::new(opts.agent);
@@ -393,10 +357,6 @@ fn finalize_yaml_change(
     Ok(())
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// Shared write helpers
-// ─────────────────────────────────────────────────────────────────────────
-
 fn apply_mcp_entry(
     path: &Path,
     command: &str,
@@ -420,6 +380,44 @@ fn apply_hook(
     let mut value = read_or_empty(path)?;
     let changed = upsert_claude_code_hook(&mut value, event, matcher, command);
     finalize_change(path, &value, changed, dry_run, report)
+}
+
+fn apply_hook_remove(
+    path: &Path,
+    event: &str,
+    matcher: &str,
+    command: &str,
+    dry_run: bool,
+    report: &mut IntegrateReport,
+) -> Result<()> {
+    if !path.exists() {
+        report.actions.push(Action::Skipped {
+            path: path.to_path_buf(),
+            reason: "no settings file to modify",
+        });
+        return Ok(());
+    }
+    let mut value = read_or_empty(path)?;
+    let changed = remove_claude_code_hook(&mut value, event, matcher, command);
+    if !changed {
+        report.actions.push(Action::Skipped {
+            path: path.to_path_buf(),
+            reason: "hygiene hook already absent",
+        });
+        return Ok(());
+    }
+    if !dry_run {
+        write_atomic(path, &value)?;
+    }
+    report.actions.push(Action::Updated(path.to_path_buf()));
+    Ok(())
+}
+
+fn hygiene_hook_command(crux_path: &str) -> String {
+    format!(
+        "{} hygiene comments --check --changed-from-stdin",
+        quoted_if_needed(crux_path),
+    )
 }
 
 fn finalize_change(
@@ -448,10 +446,6 @@ fn finalize_change(
     Ok(())
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// Tiny utilities
-// ─────────────────────────────────────────────────────────────────────────
-
 fn path_any_exists(paths: &[PathBuf]) -> bool {
     paths.iter().any(|p| p.exists())
 }
@@ -477,8 +471,6 @@ fn which_in_path(bin: &str) -> bool {
     false
 }
 
-/// Quote a path with embedded spaces for safe interpolation into the
-/// `command` string of a Claude Code hook (which is run via the shell).
 fn quoted_if_needed(s: &str) -> String {
     if s.contains(' ') && !s.starts_with('"') {
         format!("\"{s}\"")
@@ -501,6 +493,8 @@ mod tests {
             env: std::collections::BTreeMap::new(),
             install_hooks: agent.supports_hooks(),
             install_skill: agent.supports_slash_command(),
+            install_hygiene_hook: false,
+            remove_hygiene_hook: false,
             dry_run: false,
             force: false,
         }
@@ -584,6 +578,112 @@ mod tests {
         let raw = std::fs::read_to_string(&skill).unwrap();
         assert!(!raw.contains("tampered"));
         assert!(raw.contains("CRUX integration helper"));
+    }
+
+    #[test]
+    fn claude_code_default_does_not_install_hygiene_hook() {
+        let dir = tempfile::tempdir().unwrap();
+        let opts = make_opts(AgentKind::ClaudeCode, dir.path());
+        integrate(&opts).unwrap();
+        let raw =
+            std::fs::read_to_string(dir.path().join(".claude").join("settings.json")).unwrap();
+        assert!(
+            !raw.contains("hygiene comments"),
+            "hygiene hook should be opt-in only; default run must not register it"
+        );
+    }
+
+    #[test]
+    fn claude_code_hygiene_hook_opt_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut opts = make_opts(AgentKind::ClaudeCode, dir.path());
+        opts.install_hygiene_hook = true;
+        integrate(&opts).unwrap();
+        let raw =
+            std::fs::read_to_string(dir.path().join(".claude").join("settings.json")).unwrap();
+        assert!(raw.contains("PostToolUse"));
+        assert!(raw.contains("crux hygiene comments --check --changed-from-stdin"));
+        assert!(
+            raw.contains("crux hook post-tool"),
+            "sibling post-tool hook should still be present alongside hygiene"
+        );
+    }
+
+    #[test]
+    fn claude_code_hygiene_hook_install_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut opts = make_opts(AgentKind::ClaudeCode, dir.path());
+        opts.install_hygiene_hook = true;
+        let r1 = integrate(&opts).unwrap();
+        let r2 = integrate(&opts).unwrap();
+        assert!(r1.changed());
+        assert!(!r2.changed(), "re-running with enable flag should no-op");
+    }
+
+    #[test]
+    fn claude_code_hygiene_hook_disable_removes_only_hygiene() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut opts = make_opts(AgentKind::ClaudeCode, dir.path());
+        opts.install_hygiene_hook = true;
+        integrate(&opts).unwrap();
+
+        let mut disable = make_opts(AgentKind::ClaudeCode, dir.path());
+        disable.install_hooks = false;
+        disable.install_skill = false;
+        disable.remove_hygiene_hook = true;
+        let report = integrate(&disable).unwrap();
+        assert!(report.changed(), "removing the hygiene hook is a change");
+
+        let raw =
+            std::fs::read_to_string(dir.path().join(".claude").join("settings.json")).unwrap();
+        assert!(
+            !raw.contains("hygiene comments"),
+            "hygiene hook should be gone"
+        );
+        assert!(
+            raw.contains("crux hook post-tool"),
+            "the regular post-tool hook must survive"
+        );
+        assert!(raw.contains("PreToolUse"));
+    }
+
+    #[test]
+    fn claude_code_hygiene_hook_disable_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let opts = make_opts(AgentKind::ClaudeCode, dir.path());
+        integrate(&opts).unwrap();
+
+        let mut disable = make_opts(AgentKind::ClaudeCode, dir.path());
+        disable.install_hooks = false;
+        disable.install_skill = false;
+        disable.remove_hygiene_hook = true;
+        let r1 = integrate(&disable).unwrap();
+        let r2 = integrate(&disable).unwrap();
+        assert!(!r1.changed());
+        assert!(!r2.changed());
+    }
+
+    #[test]
+    fn hygiene_hook_flags_ignored_for_non_claude_agents() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut opts = make_opts(AgentKind::Cursor, dir.path());
+        opts.install_hygiene_hook = true;
+        opts.remove_hygiene_hook = true;
+        integrate(&opts).unwrap();
+        let raw = std::fs::read_to_string(dir.path().join(".cursor").join("mcp.json")).unwrap();
+        assert!(!raw.contains("hygiene"));
+    }
+
+    #[test]
+    fn claude_code_hygiene_hook_quotes_spaced_crux_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut opts = make_opts(AgentKind::ClaudeCode, dir.path());
+        opts.crux_path = "/opt/my crux/bin/crux".to_string();
+        opts.install_hygiene_hook = true;
+        integrate(&opts).unwrap();
+        let raw =
+            std::fs::read_to_string(dir.path().join(".claude").join("settings.json")).unwrap();
+        assert!(raw.contains("\\\"/opt/my crux/bin/crux\\\" hygiene comments"));
     }
 
     #[test]

@@ -1,22 +1,3 @@
-//! Loader that scrapes Claude Code + OpenClaw config files and unions
-//! their `permissions` / `tools` lists into a single [`Permissions`]
-//! bundle suitable for L7 sandbox enforcement.
-//!
-//! Resolution order (last wins for conflicts; we just push everything
-//! into the `deny` / `allow` vectors and let [`Permissions::evaluate`]
-//! decide):
-//!
-//! 1. `~/.claude/settings.json` — Claude Code global
-//!    (`permissions.{deny,allow}`).
-//! 2. `<project>/.claude/settings.json` — Claude Code per-project.
-//! 3. `~/.openclaw/openclaw.json` — OpenClaw global (`tools.{deny,allow}`).
-//! 4. `$OPENCLAW_CONFIG_PATH` if set — OpenClaw env-pinned override.
-//! 5. `<project>/.openclaw/openclaw.json` — OpenClaw per-project.
-//!
-//! Missing files are silently treated as empty. Malformed JSON is also
-//! treated as empty (with a `tracing::warn!`) so a single broken config
-//! never bricks the whole loader.
-
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
@@ -29,20 +10,10 @@ const OPENCLAW_HOME_DIRNAME: &str = ".openclaw";
 const OPENCLAW_CONFIG: &str = "openclaw.json";
 const ENV_OPENCLAW_CONFIG: &str = "OPENCLAW_CONFIG_PATH";
 
-/// Top-level entrypoint: scan every well-known agent config path the
-/// user might have, parse what's there, and return the unioned bundle.
-///
-/// `project_root` is the CRUX project root if any; pass `None` to skip
-/// the per-project paths.
-///
-/// `home_dir` is the override-able home directory used for tests so we
-/// don't have to mutate `$HOME`. In production, callers usually pass
-/// `dirs::home_dir()`.
 pub fn load_unioned(project_root: Option<&Path>, home_dir: Option<&Path>) -> Permissions {
     let mut deny: Vec<PermRule> = Vec::new();
     let mut allow: Vec<PermRule> = Vec::new();
 
-    // 1. Claude Code global
     if let Some(home) = home_dir {
         load_claude_into(
             &home.join(CLAUDE_HOME_DIRNAME).join(CLAUDE_SETTINGS),
@@ -51,7 +22,6 @@ pub fn load_unioned(project_root: Option<&Path>, home_dir: Option<&Path>) -> Per
             &mut allow,
         );
     }
-    // 2. Claude Code per-project
     if let Some(root) = project_root {
         load_claude_into(
             &root.join(CLAUDE_HOME_DIRNAME).join(CLAUDE_SETTINGS),
@@ -60,7 +30,6 @@ pub fn load_unioned(project_root: Option<&Path>, home_dir: Option<&Path>) -> Per
             &mut allow,
         );
     }
-    // 3. OpenClaw global
     if let Some(home) = home_dir {
         load_openclaw_into(
             &home.join(OPENCLAW_HOME_DIRNAME).join(OPENCLAW_CONFIG),
@@ -69,13 +38,11 @@ pub fn load_unioned(project_root: Option<&Path>, home_dir: Option<&Path>) -> Per
             &mut allow,
         );
     }
-    // 4. $OPENCLAW_CONFIG_PATH
     if let Ok(path) = std::env::var(ENV_OPENCLAW_CONFIG) {
         if !path.is_empty() {
             load_openclaw_into(Path::new(&path), PermScope::Global, &mut deny, &mut allow);
         }
     }
-    // 5. OpenClaw per-project
     if let Some(root) = project_root {
         load_openclaw_into(
             &root.join(OPENCLAW_HOME_DIRNAME).join(OPENCLAW_CONFIG),
@@ -97,8 +64,6 @@ fn load_claude_into(
     let Some(json) = read_json_silent(path) else {
         return;
     };
-    // `permissions.deny` and `permissions.allow` are documented as JSON
-    // arrays of strings. Anything else is ignored.
     let perms = json.pointer("/permissions");
     let denies = perms.and_then(|v| v.get("deny"));
     let allows = perms.and_then(|v| v.get("allow"));
@@ -115,9 +80,6 @@ fn load_openclaw_into(
     let Some(json) = read_json_silent(path) else {
         return;
     };
-    // Canonical: `tools.{deny,allow}`. Some users / older configs put
-    // the lists at the top level (`{ deny: [...], allow: [...] }`),
-    // so probe both locations and merge whatever we find.
     for ptr in &["/tools/deny", "/deny"] {
         push_string_array(json.pointer(ptr), PermSource::OpenClaw, scope, deny);
     }
@@ -159,16 +121,10 @@ fn read_json_silent(path: &Path) -> Option<Value> {
     }
 }
 
-/// Convenience wrapper that resolves the user's actual home directory
-/// (via `dirs::home_dir`) and forwards to [`load_unioned`]. Falls back
-/// to `None` for the home dir when `$HOME` is not set, in which case
-/// only project-local configs are scanned.
 pub fn load_for_project(project_root: Option<&Path>) -> Permissions {
     load_unioned(project_root, dirs::home_dir().as_deref())
 }
 
-/// Test-friendly variant that ONLY scans the supplied paths verbatim.
-/// Useful for unit tests that don't want to touch the real home dir.
 #[cfg(test)]
 pub(crate) fn load_from_paths(
     claude_global: Option<&Path>,
@@ -193,14 +149,10 @@ pub(crate) fn load_from_paths(
     Permissions::new(deny, allow)
 }
 
-/// Build a path to the canonical Claude settings file under a given
-/// directory. Surfaced for tests + diagnostics.
 pub fn claude_settings_path(dir: &Path) -> PathBuf {
     dir.join(CLAUDE_HOME_DIRNAME).join(CLAUDE_SETTINGS)
 }
 
-/// Build a path to the canonical OpenClaw config file under a given
-/// directory. Surfaced for tests + diagnostics.
 pub fn openclaw_config_path(dir: &Path) -> PathBuf {
     dir.join(OPENCLAW_HOME_DIRNAME).join(OPENCLAW_CONFIG)
 }
@@ -245,7 +197,6 @@ mod tests {
         let perms = load_from_paths(Some(&p), None, None, None);
         assert_eq!(perms.deny.len(), 2);
         assert_eq!(perms.allow.len(), 1);
-        // Source + scope are echoed correctly.
         assert!(perms
             .deny
             .iter()
@@ -309,16 +260,12 @@ mod tests {
 
     #[test]
     fn unioned_decision_blocks_rm_rf() {
-        // End-to-end: write a Claude settings.json that denies
-        // `Bash(rm -rf *)`, load the union, evaluate against a runtime
-        // request — the deny rule must fire.
         let dir = tempfile::tempdir().unwrap();
         let settings = dir.path().join(".claude").join("settings.json");
         write(
             &settings,
             r#"{ "permissions": { "deny": ["Bash(rm -rf *)"] } }"#,
         );
-        // Simulate a project root + isolate from any real home dir.
         let perms = load_unioned(Some(dir.path()), None);
         assert_eq!(perms.deny.len(), 1);
         match perms.evaluate(RuntimeKind::Bash, "rm -rf /tmp/scratch") {
@@ -329,9 +276,6 @@ mod tests {
 
     #[test]
     fn read_rule_is_ignored_for_runtime_evaluation() {
-        // `Read(.env)` is a Claude file-read deny — L7 should load it
-        // (so an audit can see it) but evaluate() must NOT translate it
-        // into a Bash deny.
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("settings.json");
         write(&p, r#"{ "permissions": { "deny": ["Read(.env)"] } }"#);

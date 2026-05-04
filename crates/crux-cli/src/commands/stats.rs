@@ -1,5 +1,3 @@
-//! `crux stats` — telemetry breakdown.
-
 use anyhow::Result;
 use clap::Args as ClapArgs;
 
@@ -10,7 +8,6 @@ use crate::Cli;
 
 #[derive(Debug, ClapArgs)]
 pub struct Args {
-    /// Restrict to a single layer (l1..l10).
     #[arg(long)]
     pub layer: Option<String>,
 }

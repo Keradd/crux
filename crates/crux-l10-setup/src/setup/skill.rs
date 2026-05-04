@@ -1,11 +1,3 @@
-//! Skill / slash-command file body that ships with `crux setup
-//! claude-code`. Written to `~/.claude/commands/crux.md` so the user
-//! can type `/crux` inside Claude Code to remind the model how to use
-//! the CRUX MCP toolset.
-//!
-//! The body is plain Markdown with a YAML front-matter block describing
-//! the slash command itself.
-
 pub const CLAUDE_CODE_SKILL: &str = r#"---
 description: How to use CRUX (token-optimization runtime) effectively in this project.
 ---

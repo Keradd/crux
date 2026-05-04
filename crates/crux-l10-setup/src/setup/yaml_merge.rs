@@ -1,23 +1,9 @@
-//! YAML read / merge / write helpers shared across YAML-configured
-//! agents (currently just Hermes Agent). Hermes reads
-//! `~/.hermes/config.yaml` and exposes MCP servers under the
-//! top-level `mcp_servers` mapping, so CRUX speaks native YAML here
-//! rather than forcing the user to convert to JSON.
-//!
-//! Comments are preserved best-effort by `serde_yaml` — top-level
-//! comments generally survive round-trips; mid-mapping comments
-//! adjacent to the `mcp_servers` key CRUX rewrites will not. The
-//! atomic-write pattern matches `json_merge`.
-
 use std::fs;
 use std::path::Path;
 
 use crux_core::error::{CruxError, Result};
 use serde_yaml::{Mapping, Value};
 
-/// Read an existing YAML file, returning an empty mapping if the
-/// file is absent or empty. Errors out if the file contains
-/// malformed YAML.
 pub fn read_or_empty(path: &Path) -> Result<Value> {
     if !path.exists() {
         return Ok(Value::Mapping(Mapping::new()));
@@ -38,9 +24,6 @@ pub fn read_or_empty(path: &Path) -> Result<Value> {
     })
 }
 
-/// Serialize and write atomically (write to a temp file in the same
-/// directory, then rename). The trailing newline matches YAML
-/// convention.
 pub fn write_atomic(path: &Path, value: &Value) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| CruxError::Io {
@@ -67,7 +50,6 @@ pub fn write_atomic(path: &Path, value: &Value) -> Result<()> {
     Ok(())
 }
 
-/// Ensure `value` is a YAML mapping; replace with `{}` if not.
 fn ensure_mapping(value: &mut Value) -> &mut Mapping {
     if !matches!(value, Value::Mapping(_)) {
         *value = Value::Mapping(Mapping::new());
@@ -75,8 +57,6 @@ fn ensure_mapping(value: &mut Value) -> &mut Mapping {
     value.as_mapping_mut().expect("ensured above")
 }
 
-/// Ensure `map[key]` is a YAML mapping, returning a mutable
-/// reference to it.
 fn ensure_mapping_at<'a>(map: &'a mut Mapping, key: &str) -> &'a mut Mapping {
     let k = Value::String(key.to_string());
     let entry = map
@@ -88,10 +68,6 @@ fn ensure_mapping_at<'a>(map: &'a mut Mapping, key: &str) -> &'a mut Mapping {
     entry.as_mapping_mut().expect("ensured above")
 }
 
-/// Set `mcp_servers.<name> = {command, args, env?}` idempotently —
-/// Hermes Agent's MCP schema
-/// (hermes-agent.nousresearch.com/docs/user-guide/features/mcp#basic-configuration-reference).
-/// Preserves sibling servers. Returns whether the document changed.
 pub fn upsert_hermes_mcp_server(
     value: &mut Value,
     name: &str,

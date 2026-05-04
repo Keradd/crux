@@ -1,25 +1,9 @@
-//! 8-stage filter pipeline.
-//!
-//! Stage order is rigid and matches rtk's reference implementation:
-//! 1. Strip ANSI escape sequences
-//! 2. Apply `replace` regex substitutions (per-line or multiline)
-//! 3. Short-circuit on `match_output` patterns
-//! 4. Drop lines matching `strip_lines_matching`
-//! 5. Truncate per-line beyond `truncate_lines_at`
-//! 6. Keep `head_lines` then optionally `tail_lines`
-//! 7. Cap total lines at `max_lines`
-//! 8. If output is empty, return `on_empty` fallback
-//!
-//! Compiled regexes are cached on the `Filter` so `apply()` is cheap to
-//! call repeatedly.
-
 use std::sync::OnceLock;
 
 use regex::Regex;
 
 use crate::spec::{FilterSpec, MatchRule, ReplaceRule};
 
-/// Compiled, ready-to-run filter.
 #[derive(Debug)]
 pub struct Filter {
     pub name: String,
@@ -46,19 +30,14 @@ struct CompiledMatch {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FilterOutput {
     pub text: String,
-    /// Reason the output is what it is. Used for telemetry detail.
     pub kind: OutputKind,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OutputKind {
-    /// `match_output` rule fired — output is the rule's message.
     Matched(String),
-    /// Empty after all stages — `on_empty` fallback used.
     OnEmpty,
-    /// Normal pipeline run produced this text.
     Filtered,
-    /// No filter matched; raw output passed through.
     Passthrough,
 }
 
@@ -98,7 +77,6 @@ impl Filter {
         })
     }
 
-    /// True if this filter wants to handle `command_line`.
     pub fn matches(&self, command_line: &str) -> bool {
         match &self.match_command {
             Some(re) => re.is_match(command_line),
@@ -106,16 +84,13 @@ impl Filter {
         }
     }
 
-    /// Run the 8-stage pipeline on raw stdout/stderr text.
     pub fn apply(&self, input: &str) -> FilterOutput {
-        // Stage 1
         let mut text = if self.spec.strip_ansi {
             strip_ansi(input)
         } else {
             input.to_string()
         };
 
-        // Stage 2
         for r in &self.replace {
             text = if r.multiline {
                 r.re.replace_all(&text, r.replacement.as_str()).into_owned()
@@ -128,7 +103,6 @@ impl Filter {
             };
         }
 
-        // Stage 3 — short-circuit
         for m in &self.match_output {
             if m.re.is_match(&text) {
                 return FilterOutput {
@@ -138,7 +112,6 @@ impl Filter {
             }
         }
 
-        // Stage 4
         if !self.strip_lines.is_empty() {
             text = text
                 .lines()
@@ -147,12 +120,10 @@ impl Filter {
                 .join("\n");
         }
 
-        // Stage 5
         if let Some(width) = self.spec.truncate_lines_at {
             text = truncate_each_line(&text, width);
         }
 
-        // Stage 6
         if self.spec.head_lines.is_some() || self.spec.tail_lines.is_some() {
             text = head_tail(
                 &text,
@@ -161,18 +132,12 @@ impl Filter {
             );
         }
 
-        // Stage 7
         if let Some(cap) = self.spec.max_lines {
             text = max_lines(&text, cap);
         }
 
-        // Final cleanup: drop leading/trailing blank lines so head/tail
-        // splices don't leave the agent staring at an empty first line.
-        // Internal blanks survive — they're often semantically meaningful
-        // (e.g., separating test summary from failure list).
         text = trim_outer_blanks(&text);
 
-        // Stage 8
         if text.trim().is_empty() {
             if let Some(fb) = &self.spec.on_empty {
                 return FilterOutput {
@@ -189,15 +154,7 @@ impl Filter {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────────────────────────────────
-
 fn compile_replace(r: &ReplaceRule) -> Result<CompiledReplace, regex::Error> {
-    // Per-line replace runs against each individual line so `^`/`$` already
-    // anchor to the line boundary. Multiline replace runs against the whole
-    // text — turn on `(?m)` so `^`/`$` still mean line edges, which is what
-    // every real-world filter author actually wants.
     let pattern = if r.multiline && !r.pattern.starts_with("(?") {
         format!("(?m){}", r.pattern)
     } else {
@@ -211,10 +168,6 @@ fn compile_replace(r: &ReplaceRule) -> Result<CompiledReplace, regex::Error> {
 }
 
 fn compile_match(m: &MatchRule) -> Result<CompiledMatch, regex::Error> {
-    // `match_output` rules are short-circuit fingerprints. Real-world
-    // patterns use line anchors (e.g. `^all good$`) and the input always
-    // contains the trailing newline from the captured stdout. Enable
-    // multiline by default so anchors land per-line, not per-string.
     let pat = if m.pattern.starts_with("(?") {
         m.pattern.clone()
     } else {
@@ -226,11 +179,9 @@ fn compile_match(m: &MatchRule) -> Result<CompiledMatch, regex::Error> {
     })
 }
 
-/// Strip ANSI CSI/OSC escape sequences. Cached compiled regex.
 pub fn strip_ansi(s: &str) -> String {
     static RE: OnceLock<Regex> = OnceLock::new();
     let re = RE.get_or_init(|| {
-        // Covers CSI (ESC [ ...), OSC (ESC ] ...), and bare ESC sequences.
         Regex::new(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[@-Z\\-_]").unwrap()
     });
     re.replace_all(s, "").into_owned()
@@ -276,9 +227,6 @@ fn max_lines(text: &str, cap: usize) -> String {
     format!("{}\n… [+{} lines truncated]", kept.join("\n"), dropped)
 }
 
-/// Drop fully-empty lines at the very start and end of `text`. Lines
-/// containing only whitespace count as blank. Internal blanks are
-/// preserved.
 fn trim_outer_blanks(text: &str) -> String {
     let lines: Vec<&str> = text.lines().collect();
     let mut start = 0;

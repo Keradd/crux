@@ -1,18 +1,11 @@
-//! Core types for Layer 6 hybrid search.
-
 use serde::{Deserialize, Serialize};
 
-/// What kind of payload a chunk holds. Used for filtering at query time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ContentType {
-    /// Source code excerpt (typically tied to an `ast_nodes` row).
     Code,
-    /// Natural-language prose (markdown paragraph, doc-comment, …).
     Prose,
-    /// A bare symbol record (qualified_name + signature).
     Symbol,
-    /// A memory observation projected into the search index.
     Memory,
 }
 
@@ -37,7 +30,6 @@ impl ContentType {
     }
 }
 
-/// A unit of retrieval. Created by the chunker, persisted by the indexer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Chunk {
     pub project_root: String,
@@ -51,7 +43,6 @@ pub struct Chunk {
     pub line_end: u32,
 }
 
-/// A persisted chunk read back from the DB.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredChunk {
     pub id: i64,
@@ -68,16 +59,13 @@ pub struct StoredChunk {
     pub content_hash: String,
 }
 
-/// Final hybrid result with the breakdown of contributing rankers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HybridResult {
     pub chunk: StoredChunk,
     pub score: f64,
-    /// 1-based ranks per ranker. `None` means the doc didn't appear.
     pub bm25_porter_rank: Option<usize>,
     pub bm25_trigram_rank: Option<usize>,
     pub vector_rank: Option<usize>,
-    /// Snippet around the best query-term match (best-effort).
     pub snippet: String,
 }
 

@@ -1,8 +1,3 @@
-//! Crate-wide error type for `crux-core` and downstream layers.
-//!
-//! Library code returns `Result<T, CruxError>`. The CLI maps these into
-//! human-readable messages.
-
 use std::path::PathBuf;
 use thiserror::Error;
 

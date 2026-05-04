@@ -1,11 +1,3 @@
-//! `CoachEngine` — compute a CRUX-wide health score from the live
-//! configuration + telemetry + memory state. Persists snapshots to
-//! `quality_scores` so later runs can show deltas.
-//!
-//! The scoring matrix is adapted from alex/token-optimizer's Coach mode
-//! (see `docs/CRUX-DESIGN.md` §7.9). Thresholds are expressed as percent
-//! of the dominant context window so the score is model-agnostic.
-
 use std::path::Path;
 
 use rusqlite::{params, Connection};
@@ -15,10 +7,7 @@ use crux_core::{config::Config, error::Result, paths, telemetry};
 use crate::drift::DriftTracker;
 use crate::types::{score_to_grade, CoachData, Pattern, Severity, Snapshot};
 
-/// Assumed context window for scoring when we don't have model-specific
-/// telemetry yet. 200k matches Sonnet 3.5 / current Claude Code default.
 const DEFAULT_CONTEXT_WINDOW: u32 = 200_000;
-/// CLAUDE.md budget thresholds (as fraction of context window).
 const CLAUDE_MD_LEAN_PCT: f64 = 2.0;
 const CLAUDE_MD_FAT_PCT: f64 = 3.0;
 
@@ -37,8 +26,6 @@ impl<'c> CoachEngine<'c> {
         }
     }
 
-    /// Compute the current health snapshot. Does NOT persist — call
-    /// [`Self::persist`] separately if you want history.
     pub fn snapshot(&self) -> Result<CoachData> {
         let mut score: i32 = 75;
         let mut patterns_good: Vec<Pattern> = Vec::new();
@@ -47,7 +34,6 @@ impl<'c> CoachEngine<'c> {
         let ctx_window = DEFAULT_CONTEXT_WINDOW;
         let (claude_md_tokens, claude_md_pct) = self.claude_md_metrics(ctx_window);
 
-        // ── CLAUDE.md size
         if claude_md_tokens > 0 && claude_md_pct < CLAUDE_MD_LEAN_PCT {
             score += 5;
             patterns_good.push(Pattern::good(
@@ -89,7 +75,6 @@ impl<'c> CoachEngine<'c> {
             );
         }
 
-        // ── telemetry signals
         let project_pr = self.project_root.map(|p| p.display().to_string());
         let stats = telemetry::stats_by_layer(self.conn, project_pr.as_deref())?;
         let total_events: i64 = stats.iter().map(|s| s.events).sum();
@@ -122,7 +107,6 @@ impl<'c> CoachEngine<'c> {
             ));
         }
 
-        // ── L4 cache hit telemetry detail
         let l4_hits = stats
             .iter()
             .find(|s| s.layer == "l4")
@@ -143,7 +127,6 @@ impl<'c> CoachEngine<'c> {
             );
         }
 
-        // ── layer coverage — count what's ON
         let active = active_layer_count(&self.config.layers);
         let unused = 11 - active;
         if active <= 3 {
@@ -158,7 +141,6 @@ impl<'c> CoachEngine<'c> {
             );
         }
 
-        // ── L7 sandbox note (default-on since 2026-05-03)
         if !self.config.layers.l7_sandbox {
             patterns_good.push(Pattern::good(
                 "Sandbox disabled",
@@ -166,10 +148,8 @@ impl<'c> CoachEngine<'c> {
             ));
         }
 
-        // ── memory telemetry detail
         let mem_count = self.observation_count()?;
 
-        // clamp
         score = score.clamp(0, 100);
         let grade = score_to_grade(score);
 
@@ -194,9 +174,6 @@ impl<'c> CoachEngine<'c> {
         })
     }
 
-    /// Run the scoring pass and write a row to `quality_scores`. Also
-    /// refreshes `claude_md_history`. Returns the snapshot so callers
-    /// don't need to call `snapshot()` twice.
     pub fn persist(&self, session_id: Option<&str>) -> Result<CoachData> {
         let data = self.snapshot()?;
         let now = chrono::Utc::now().timestamp();
@@ -252,8 +229,6 @@ impl<'c> CoachEngine<'c> {
     }
 
     fn observation_count(&self) -> Result<i64> {
-        // observations table comes from migration 003; fall back to 0 if
-        // somehow missing so coach still renders on older DBs.
         let n: i64 = self
             .conn
             .query_row(
@@ -285,7 +260,6 @@ fn active_layer_count(t: &crux_core::config::LayerToggles) -> u32 {
     .count() as u32
 }
 
-// Expose the crux_home helper so CLI doesn't need a direct dep.
 pub fn crux_home_opt() -> Option<std::path::PathBuf> {
     paths::crux_home().ok()
 }
@@ -298,7 +272,6 @@ mod tests {
     fn fixture_runtime(project: &Path) -> (Connection, Config) {
         let conn = crux_core::db::open_in_memory().unwrap();
         let cfg = Config::default();
-        // Make sure the dir looks like a CRUX project for the tests.
         std::fs::create_dir_all(project.join(".crux")).unwrap();
         (conn, cfg)
     }

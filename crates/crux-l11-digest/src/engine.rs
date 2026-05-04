@@ -1,11 +1,3 @@
-//! `DigestEngine` — record turn events, render summaries, compact
-//! pending events into [`TurnDigest`] rows.
-//!
-//! The engine is sync and takes a borrowed `&Connection` so callers
-//! can share the main CRUX DB handle. Auto-compaction is opt-in via
-//! [`L11Config::auto_compact_every_n`]; pass `0` to require an
-//! explicit `crux compact` / `crux_compact` MCP call.
-
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crux_core::error::{CruxError, Result};
@@ -14,8 +6,6 @@ use crux_l8_memory::{MemoryEngine, NewObservation, ObservationKind};
 use crate::render;
 use crate::types::{L11Config, StoredTurnEvent, TurnDigest, TurnEvent, TurnStatus};
 
-/// Result of [`DigestEngine::record`] — the inserted event id plus the
-/// digest produced if auto-compaction fired.
 #[derive(Debug, Clone)]
 pub struct RecordOutcome {
     pub event_id: i64,
@@ -32,7 +22,6 @@ impl<'c> DigestEngine<'c> {
         Self { conn, config }
     }
 
-    /// Construct with default config (useful for tests + ad-hoc calls).
     pub fn default_with_conn(conn: &'c Connection) -> Self {
         Self {
             conn,
@@ -40,9 +29,6 @@ impl<'c> DigestEngine<'c> {
         }
     }
 
-    /// Insert a [`TurnEvent`]. If the session's pending-event count
-    /// crosses [`L11Config::auto_compact_every_n`] the engine emits a
-    /// digest in the same call.
     pub fn record(&self, ev: &TurnEvent) -> Result<RecordOutcome> {
         if ev.session_id.trim().is_empty() {
             return Err(CruxError::other("turn event session_id cannot be empty"));
@@ -95,7 +81,6 @@ impl<'c> DigestEngine<'c> {
         })
     }
 
-    /// Number of unrolled events for the session.
     pub fn pending_count(&self, session_id: &str) -> Result<i64> {
         let n: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM turn_events WHERE session_id = ? AND rolled_up_into IS NULL",
@@ -105,9 +90,6 @@ impl<'c> DigestEngine<'c> {
         Ok(n)
     }
 
-    /// Render the most recent events for the session as a summary.
-    /// Honors [`L11Config::render_max_events`] and
-    /// [`L11Config::max_summary_tokens`].
     pub fn summarize(&self, session_id: &str) -> Result<String> {
         let events =
             self.list_pending_events(session_id, self.config.render_max_events as usize)?;
@@ -115,8 +97,6 @@ impl<'c> DigestEngine<'c> {
         Ok(render::render(&lite, self.config.max_summary_tokens))
     }
 
-    /// Render the latest digest for the session, falling back to
-    /// `summarize` if no digests exist yet.
     pub fn latest_summary(&self, session_id: &str) -> Result<String> {
         if let Some(d) = self.latest_digest(session_id)? {
             let mut out = format!(
@@ -124,8 +104,6 @@ impl<'c> DigestEngine<'c> {
                 d.id, d.event_count, d.ts_start_epoch, d.ts_end_epoch,
             );
             out.push_str(&d.summary);
-            // Append still-pending events under their own header so
-            // the agent sees both archived + live activity.
             let pending = self.pending_count(session_id)?;
             if pending > 0 {
                 out.push_str(&format!("\n\n--- {} pending event(s) ---\n", pending));
@@ -137,11 +115,6 @@ impl<'c> DigestEngine<'c> {
         }
     }
 
-    /// Force-compact every pending event for the session into a single
-    /// `turn_digests` row. Returns the inserted digest. Idempotent: if
-    /// no events are pending the call inserts a zero-event digest only
-    /// when called explicitly via this method (CLI/MCP) — auto-compact
-    /// short-circuits earlier.
     pub fn compact(&self, session_id: &str) -> Result<TurnDigest> {
         let events = self.list_pending_events(session_id, usize::MAX)?;
         let now = chrono::Utc::now().timestamp();
@@ -181,14 +154,12 @@ impl<'c> DigestEngine<'c> {
         let digest_id = self.conn.last_insert_rowid();
 
         if !events.is_empty() {
-            // Mark every pending event as rolled-up by this digest.
             self.conn.execute(
                 "UPDATE turn_events SET rolled_up_into = ? WHERE session_id = ? AND rolled_up_into IS NULL",
                 params![digest_id, session_id],
             )?;
         }
 
-        // Optional L8 mirror.
         let mut observation_id: Option<i64> = None;
         if self.config.mirror_to_l8 && event_count > 0 && !project_root.is_empty() {
             let mem = MemoryEngine::new(self.conn)?;
@@ -236,7 +207,6 @@ impl<'c> DigestEngine<'c> {
         })
     }
 
-    /// Most recent digest for the session, if any.
     pub fn latest_digest(&self, session_id: &str) -> Result<Option<TurnDigest>> {
         self.conn
             .query_row(
@@ -252,7 +222,6 @@ impl<'c> DigestEngine<'c> {
             .map_err(Into::into)
     }
 
-    /// Return the most recent `limit` digests for a project (latest first).
     pub fn list_digests(&self, project_root: &str, limit: usize) -> Result<Vec<TurnDigest>> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT {} FROM turn_digests WHERE project_root = ? \
@@ -265,8 +234,6 @@ impl<'c> DigestEngine<'c> {
         Ok(rows)
     }
 
-    /// Return the most recent `limit` events for a session that have
-    /// not yet been rolled up.
     pub fn list_pending_events(
         &self,
         session_id: &str,
@@ -290,8 +257,6 @@ impl<'c> DigestEngine<'c> {
         Ok(rows)
     }
 
-    /// Convenience used by tests: every event for a session, regardless
-    /// of rollup status.
     pub fn list_all_events(&self, session_id: &str) -> Result<Vec<StoredTurnEvent>> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT {} FROM turn_events WHERE session_id = ? \
@@ -528,8 +493,6 @@ mod tests {
         let eng = DigestEngine::new(&conn, cfg);
         eng.record(&ev("s1", "Read", "a")).unwrap();
         let d1 = eng.compact("s1").unwrap();
-        // Force a second-tick gap so ordering isn't ambiguous on fast
-        // systems; the (created_at_epoch, id) order resolves ties.
         eng.record(&ev("s1", "Edit", "a")).unwrap();
         let d2 = eng.compact("s1").unwrap();
         let list = eng.list_digests("/p", 5).unwrap();

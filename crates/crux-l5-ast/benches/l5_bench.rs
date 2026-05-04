@@ -18,7 +18,6 @@ fn create_test_file(dir: &Path, name: &str, content: &str) -> std::path::PathBuf
 fn bench_parse(c: &mut Criterion) {
     let mut group = c.benchmark_group("l5_parse");
 
-    // Small Rust file
     let small_rust = r#"
 fn main() {
     println!("hello");
@@ -38,7 +37,6 @@ fn helper() -> i32 {
         })
     });
 
-    // Medium Rust file (100 lines)
     let medium_rust: String = (0..100)
         .map(|i| format!("fn func_{}() {{ println!(\"{}\"); }}\n", i, i))
         .collect();
@@ -52,7 +50,6 @@ fn helper() -> i32 {
         })
     });
 
-    // Python file
     let python_code = r#"
 def hello():
     print("hello")
@@ -84,7 +81,6 @@ fn bench_find_symbol(c: &mut Criterion) {
     let store = GraphStore::new(&conn);
     let tmp = TempDir::new().unwrap();
 
-    // Index a medium Rust file
     let rust_code: String = (0..50)
         .map(|i| format!("pub fn func_{}() {{ println!(\"{}\"); }}\n", i, i))
         .collect();
@@ -123,7 +119,6 @@ fn bench_impact_radius(c: &mut Criterion) {
     let conn = setup_db();
     let store = GraphStore::new(&conn);
 
-    // Index code with call relationships
     let rust_code = r#"
 fn caller1() {
     callee1();

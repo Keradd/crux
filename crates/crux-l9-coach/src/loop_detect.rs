@@ -1,15 +1,3 @@
-//! Loop detection — compares the most recent agent inputs against a
-//! short history, flags a loop when similarity crosses the configured
-//! threshold.
-//!
-//! We use token-level Jaccard similarity (|A ∩ B| / |A ∪ B|) instead of
-//! cosine because we have no embedder yet and Jaccard survives minor
-//! word reordering without false positives on common-word overlap.
-//!
-//! State is persisted in `loop_state` so hook calls from separate
-//! processes share the same window. Each row holds at most
-//! `MAX_HISTORY` entries per channel.
-
 use std::collections::{HashSet, VecDeque};
 
 use rusqlite::{params, Connection, OptionalExtension};
@@ -41,9 +29,6 @@ impl<'c> LoopDetector<'c> {
         self
     }
 
-    /// Append a new turn and report whether we look stuck. `user_msg` or
-    /// `tool_result` may be empty — the detector tracks only the ones
-    /// supplied.
     pub fn check(
         &self,
         session_id: &str,
@@ -145,10 +130,6 @@ impl<'c> LoopDetector<'c> {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// internals
-// ─────────────────────────────────────────────────────────────────────────
-
 #[derive(Debug, Default)]
 struct LoopStateRow {
     user_msgs: VecDeque<String>,
@@ -160,9 +141,6 @@ fn parse_vec(raw: &str) -> Vec<String> {
     serde_json::from_str(raw).unwrap_or_default()
 }
 
-/// Push a new turn onto `buf`, keep `buf.len() <= cap`, return the max
-/// Jaccard similarity vs any previous turn. Empty pushes are ignored so
-/// a call that only supplies one of user/tool doesn't clobber the other.
 fn push_and_score(buf: &mut VecDeque<String>, turn: &str, cap: usize, _threshold: f64) -> f64 {
     if turn.trim().is_empty() {
         return 0.0;
@@ -241,7 +219,6 @@ mod tests {
             det.check("s1", "repeat the same request", "").unwrap();
         }
         let r = det.check("s1", "repeat the same request", "").unwrap();
-        // After 2 warnings the flag should stop firing.
         assert!(!r.is_loop);
     }
 

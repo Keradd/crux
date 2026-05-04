@@ -1,16 +1,3 @@
-//! CRUX Layer 3 — bash command output filter.
-//!
-//! Goal: replace the verbose stdout of common dev tools with the minimum
-//! fact the agent needs. Mechanism is a TOML DSL describing an 8-stage
-//! pipeline, ported from rtk-ai/rtk's reference implementation.
-//!
-//! Public surface:
-//! - [`FilterEngine`] — owns compiled filters, dispatches by command line
-//! - [`FilterSpec`] / [`FilterFile`] — TOML deserialization types
-//! - [`Filter`] / [`FilterOutput`] — single filter and its output value
-//!
-//! See `crates/crux-l3-bash/filters/*.toml` for the built-in filter set.
-
 pub mod engine;
 pub mod pipeline;
 pub mod spec;
@@ -19,13 +6,6 @@ pub use engine::{FilterEngine, ProcessResult};
 pub use pipeline::{Filter, FilterOutput, OutputKind};
 pub use spec::{FilterFile, FilterSpec, FilterTest, MatchRule, ReplaceRule};
 
-// ─────────────────────────────────────────────────────────────────────────
-// Inline TOML test runner.
-//
-// Each built-in filter file may include a `[[tests]]` array of golden
-// inputs and expected outputs. We surface them here as one cargo test so
-// `cargo test -p crux-l3-bash` exercises every fixture.
-// ─────────────────────────────────────────────────────────────────────────
 #[cfg(test)]
 mod inline_tests {
     use super::*;

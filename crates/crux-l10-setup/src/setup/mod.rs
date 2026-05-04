@@ -1,21 +1,3 @@
-//! `crux setup <agent>` — register CRUX as an MCP server (and hooks
-//! where supported) inside third-party AI tools.
-//!
-//! Supported agents:
-//!
-//! - **Claude Code** — MCP entry + PreToolUse/PostToolUse hooks +
-//!   slash command (`/crux`).
-//! - **Claude Desktop** — MCP entry.
-//! - **Cursor** — MCP entry.
-//! - **Windsurf (Cascade)** — MCP entry.
-//! - **Cline** (VS Code extension) — MCP entry in the VS Code
-//!   `globalStorage` settings file.
-//! - **Zed** — `context_servers` entry (Zed's MCP equivalent).
-//!
-//! Every operation is idempotent: existing entries are detected and
-//! left alone unless they differ. JSON files are read with `serde_json`
-//! (plain JSON only — JSONC comments must be stripped).
-
 pub mod agents;
 pub mod json_merge;
 pub mod skill;
@@ -26,7 +8,6 @@ use std::path::PathBuf;
 
 use crux_core::error::{CruxError, Result};
 
-/// Which agent to integrate with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentKind {
     ClaudeCode,
@@ -35,16 +16,7 @@ pub enum AgentKind {
     Windsurf,
     Cline,
     Zed,
-    /// OpenClaw Gateway (docs.openclaw.ai). MCP client registry lives
-    /// at `~/.openclaw/openclaw.json` (or `$OPENCLAW_CONFIG_PATH`)
-    /// under the `mcp.servers.<name>` key path. JSON5 comments are
-    /// not supported by CRUX's merge — clients with comments will
-    /// need to strip them before re-registering.
     OpenClaw,
-    /// Hermes Agent (NousResearch). MCP servers are registered in
-    /// `~/.hermes/config.yaml` under the top-level `mcp_servers`
-    /// mapping. CRUX writes the file as plain YAML; existing keys
-    /// are preserved.
     Hermes,
 }
 
@@ -113,10 +85,6 @@ impl AgentKind {
     }
 }
 
-/// Where to write the integration. `Auto` picks `Global` for agents
-/// whose canonical location is the user's home dir (almost all of
-/// them), and `Project` only for the small number of agents that
-/// strictly require per-project config.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
     Global,
@@ -129,30 +97,17 @@ pub struct IntegrateOptions {
     pub agent: AgentKind,
     pub scope: Scope,
     pub project_root: PathBuf,
-    /// Command to invoke inside the registered MCP entry. Default:
-    /// the absolute path of the running `crux` binary, falling back
-    /// to the bare name `crux`.
     pub crux_path: String,
-    /// Environment variables to record in the agent's MCP entry. Some
-    /// agents (Windsurf in particular) launch their MCP children from
-    /// `$HOME` rather than the project root, so passing
-    /// `CRUX_PROJECT=/path/to/repo` here lets CRUX's L5 / L6 tools
-    /// target the right project. Use a `BTreeMap` so writes have a
-    /// stable order across invocations (idempotency).
     pub env: BTreeMap<String, String>,
-    /// Claude Code only: also write PreToolUse / PostToolUse hooks.
     pub install_hooks: bool,
-    /// Claude Code only: also write the `/crux` slash-command file.
     pub install_skill: bool,
-    /// If true, do not write to disk; only return the planned actions.
+    pub install_hygiene_hook: bool,
+    pub remove_hygiene_hook: bool,
     pub dry_run: bool,
-    /// Overwrite the slash-command skill file if it already exists.
-    /// (MCP / hook entries are merged idempotently regardless.)
     pub force: bool,
 }
 
 impl IntegrateOptions {
-    /// Sensible defaults for a typical "I just want it to work" run.
     pub fn new(agent: AgentKind, project_root: PathBuf) -> Self {
         Self {
             agent,
@@ -162,14 +117,14 @@ impl IntegrateOptions {
             env: BTreeMap::new(),
             install_hooks: agent.supports_hooks(),
             install_skill: agent.supports_slash_command(),
+            install_hygiene_hook: false,
+            remove_hygiene_hook: false,
             dry_run: false,
             force: false,
         }
     }
 }
 
-/// Per-action record so the CLI / JSON renderer can describe what
-/// `crux setup` did or would do.
 #[derive(Debug, Clone)]
 pub enum Action {
     Created(PathBuf),
@@ -199,9 +154,6 @@ impl IntegrateReport {
     }
 }
 
-/// Detect every supported agent that looks installed on this machine.
-/// "Installed" is heuristic: presence of the agent's known config
-/// directory or executable.
 pub fn auto_detect() -> Vec<AgentKind> {
     AgentKind::all()
         .iter()
@@ -210,16 +162,10 @@ pub fn auto_detect() -> Vec<AgentKind> {
         .collect()
 }
 
-/// Run the integration for a single agent.
 pub fn integrate(opts: &IntegrateOptions) -> Result<IntegrateReport> {
     agents::integrate(opts)
 }
 
-/// Best-effort default for the `crux` binary path: absolute path of
-/// the currently-running executable, falling back to the bare name
-/// `"crux"` (which assumes `crux` is on `$PATH` of the spawned MCP
-/// child process — typically the case after `cargo install` or a
-/// release-binary install into `/usr/local/bin`).
 pub fn default_crux_path() -> String {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(s) = exe.to_str() {
@@ -229,7 +175,6 @@ pub fn default_crux_path() -> String {
     "crux".to_string()
 }
 
-/// Resolve `~`/`$HOME`. Returns an error if neither is available.
 pub fn home_dir() -> Result<PathBuf> {
     dirs::home_dir().ok_or_else(|| CruxError::other("could not resolve $HOME"))
 }

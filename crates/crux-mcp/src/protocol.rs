@@ -1,17 +1,3 @@
-//! Minimal MCP wire protocol: JSON-RPC 2.0 over a line-delimited stream.
-//!
-//! This is intentionally hand-rolled — the upstream `rmcp` crate is still
-//! pre-1.0 and pulling it in would mean tracking its breaking-change
-//! cadence. The MCP we implement here covers the methods Claude Code
-//! and Cursor rely on:
-//!
-//! - `initialize` / `initialized`
-//! - `tools/list`
-//! - `tools/call`
-//!
-//! Everything else returns a JSON-RPC `MethodNotFound` so the upstream
-//! handshake terminates cleanly.
-
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -19,14 +5,9 @@ pub const PROTOCOL_VERSION: &str = "2024-11-05";
 pub const SERVER_NAME: &str = "crux";
 pub const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-// ─────────────────────────────────────────────────────────────────────────
-// JSON-RPC 2.0 framing
-// ─────────────────────────────────────────────────────────────────────────
-
 #[derive(Debug, Clone, Deserialize)]
 pub struct Request {
     pub jsonrpc: String,
-    /// Notifications omit `id`; we still parse them but won't reply.
     #[serde(default)]
     pub id: Option<Value>,
     pub method: String,
@@ -116,10 +97,6 @@ impl Response {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// MCP-specific payloads
-// ─────────────────────────────────────────────────────────────────────────
-
 #[derive(Debug, Clone, Serialize)]
 pub struct InitializeResult {
     #[serde(rename = "protocolVersion")]
@@ -138,8 +115,6 @@ pub struct ServerCapabilities {
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct ToolsCapability {
-    /// We don't notify clients about tool list changes — the set is
-    /// fixed for the duration of the process.
     #[serde(rename = "listChanged")]
     pub list_changed: bool,
 }

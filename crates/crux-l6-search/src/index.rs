@@ -1,9 +1,3 @@
-//! Persist [`Chunk`]s + their embeddings into the search tables.
-//!
-//! Writes are dedup-aware: a `(project_root, content_hash)` collision
-//! short-circuits with `chunks_skipped_unchanged`. The embedding row is
-//! always rewritten because the embedder/model may have changed.
-
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 
@@ -23,7 +17,6 @@ impl<'c> Indexer<'c> {
     }
 
     pub fn index_chunks(&self, chunks: &[Chunk], embedder: &dyn Embedder) -> Result<IndexStats> {
-        // (Already takes a trait object — kept for clarity vs the engine.)
         let mut stats = IndexStats::default();
         let now = chrono::Utc::now().timestamp();
         for chunk in chunks {
@@ -70,8 +63,6 @@ impl<'c> Indexer<'c> {
                 }
             };
 
-            // Always (re)write the embedding so changing the embedder
-            // backend updates older rows on the next index pass.
             let vec = embedder.embed(&chunk.content)?;
             let norm = vec.iter().map(|x| x * x).sum::<f32>().sqrt() as f64;
             let blob = pack_vector(&vec);
@@ -101,11 +92,7 @@ impl<'c> Indexer<'c> {
         Ok(stats)
     }
 
-    /// Remove every chunk + embedding belonging to `project_root`. Useful
-    /// when the caller wants to do a clean rebuild.
     pub fn purge_project(&self, project_root: &str) -> Result<()> {
-        // FK with ON DELETE CASCADE handles the embedding side, and the
-        // FTS triggers cascade through the AFTER DELETE on `chunks`.
         self.conn.execute(
             "DELETE FROM chunks WHERE project_root = ?",
             params![project_root],
@@ -113,9 +100,6 @@ impl<'c> Indexer<'c> {
         Ok(())
     }
 
-    /// Remove chunks for the given `file_paths` (project-relative) inside
-    /// `project_root`. Used by the Merkle reindexer when a file is
-    /// deleted or renamed out of view.
     pub fn purge_files(&self, project_root: &str, file_paths: &[String]) -> Result<u64> {
         if file_paths.is_empty() {
             return Ok(0);

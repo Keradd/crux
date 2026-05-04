@@ -1,8 +1,3 @@
-//! Project scaffold templates.
-//!
-//! Generated files are intentionally short and structured around the
-//! "4 essential, ~800 token" load pattern from nadimtuhin/claude-token-optimizer.
-
 pub const COMMON_MISTAKES: &str = include_str!("../templates/common_mistakes.md");
 pub const QUICK_START: &str = include_str!("../templates/quick_start.md");
 pub const ARCHITECTURE_MAP: &str = include_str!("../templates/architecture_map.md");
@@ -11,7 +6,6 @@ pub const CRUX_IGNORE: &str = include_str!("../templates/crux_ignore");
 pub const COMPLETIONS_README: &str = include_str!("../templates/completions_readme.md");
 pub const SESSIONS_README: &str = include_str!("../templates/sessions_readme.md");
 
-/// Render the project root `CLAUDE.md` from a template + project metadata.
 pub fn render_claude_md(meta: &ProjectMeta<'_>, profile_body: &str) -> String {
     let today = chrono::Utc::now().format("%Y-%m-%d");
     format!(

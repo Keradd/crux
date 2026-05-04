@@ -1,10 +1,3 @@
-//! Hybrid search: BM25 (porter + trigram) + dense cosine + RRF merge.
-//!
-//! Reciprocal Rank Fusion is applied with constant `k = 60` (the value
-//! popularized by Cormack et al.). Each ranker contributes
-//! `1 / (k + rank)` to a candidate's score; the engine ranks by the
-//! summed value and returns the top-K with per-ranker provenance.
-
 use std::collections::{HashMap, HashSet};
 
 use rusqlite::{params, Connection};
@@ -18,16 +11,9 @@ const RRF_K: f64 = 60.0;
 const FTS_FETCH_PER_TOKENIZER: usize = 50;
 const VECTOR_FETCH_LIMIT: usize = 200;
 const SNIPPET_WINDOW: usize = 80;
-/// Scale factor for the proximity rerank boost. Chosen so that a tight
-/// match (window ≈ 0) adds roughly one RRF "rank step" worth of score.
 const PROXIMITY_ALPHA: f64 = 0.05;
-/// Softening constant so a zero-length window doesn't blow up the boost
-/// and a 200-char window still contributes something small.
 const PROXIMITY_BETA: f64 = 40.0;
-/// Maximum Levenshtein distance tolerated by the fuzzy correction pass.
 const FUZZY_MAX_DIST: u32 = 1;
-/// Fuzzy correction is best-effort; cap vocabulary scan to avoid
-/// pathological title stores dragging the query path.
 const FUZZY_VOCAB_CAP: usize = 5_000;
 
 #[derive(Debug, Clone)]
@@ -68,9 +54,6 @@ impl<'c> SearchEngine<'c> {
         if !out.is_empty() {
             return Ok(out);
         }
-        // Nothing matched — try a single-shot fuzzy rewrite against the
-        // project's own title vocabulary. This only fires when every
-        // ranker missed, so it can't demote a working query.
         if let Some(corrected) = self.fuzzy_correct(project_root, query)? {
             if corrected != query {
                 return self.hybrid_search_raw(project_root, &corrected, opts);
@@ -105,11 +88,9 @@ impl<'c> SearchEngine<'c> {
             return Ok(Vec::new());
         }
 
-        // Materialize candidate chunks in one query.
         let ids: Vec<i64> = accum.keys().copied().collect();
         let chunks = self.fetch_chunks(&ids)?;
 
-        // Pre-tokenise the query once for the proximity rerank.
         let qtokens = tokenize_query(query);
 
         let mut out: Vec<HybridResult> = chunks
@@ -142,9 +123,6 @@ impl<'c> SearchEngine<'c> {
         Ok(out)
     }
 
-    /// Return a corrected query with each unknown token swapped for the
-    /// nearest Levenshtein-1 neighbor drawn from the project's title
-    /// vocabulary. Returns `None` when no token had a close neighbor.
     fn fuzzy_correct(&self, project_root: &str, query: &str) -> Result<Option<String>> {
         let qtokens = tokenize_query(query);
         if qtokens.is_empty() {
@@ -349,8 +327,6 @@ fn kind_clause(kinds: &[ContentType]) -> String {
     format!("AND c.content_type IN ({inner})")
 }
 
-/// Tame an arbitrary user query for FTS5: drop characters that have
-/// special meaning, keep alnum/underscore words, OR them together.
 fn sanitize_fts_query(q: &str) -> String {
     let words: Vec<String> = q
         .split(|c: char| !c.is_alphanumeric() && c != '_')
@@ -363,8 +339,6 @@ fn sanitize_fts_query(q: &str) -> String {
     words.join(" OR ")
 }
 
-/// Pick the most informative ~SNIPPET_WINDOW-char window of `content`
-/// that contains the most query tokens.
 fn best_snippet(content: &str, query: &str) -> String {
     let qtokens: Vec<String> = query
         .split(|c: char| !c.is_alphanumeric() && c != '_')
@@ -380,9 +354,6 @@ fn best_snippet(content: &str, query: &str) -> String {
     let mut start = 0usize;
     while start < lower.len() {
         let end = (start + SNIPPET_WINDOW).min(lower.len());
-        // Honour UTF-8 boundaries — `to_ascii_lowercase` preserves byte
-        // offsets for ASCII but multi-byte codepoints like em-dashes
-        // still need boundary-safe slicing.
         let window = safe_slice(&lower, start, end);
         let hits = qtokens
             .iter()
@@ -400,7 +371,6 @@ fn best_snippet(content: &str, query: &str) -> String {
     if lo > 0 {
         snippet.push('…');
     }
-    // Walk char boundaries so we never slice mid-codepoint.
     snippet.push_str(safe_slice(content, lo, hi));
     if hi < content.len() {
         snippet.push('…');
@@ -420,10 +390,6 @@ fn safe_slice(s: &str, lo: usize, hi: usize) -> &str {
     &s[a..b]
 }
 
-/// Split `query` into lowercase alphanumeric tokens, de-duplicated while
-/// preserving input order. Underscore is treated as a word separator so
-/// identifiers like `compute_delta` split into `compute` + `delta`,
-/// matching how the fuzzy-correction vocabulary is built.
 fn tokenize_query(query: &str) -> Vec<String> {
     let mut seen: HashSet<String> = HashSet::new();
     let mut out: Vec<String> = Vec::new();
@@ -439,15 +405,11 @@ fn tokenize_query(query: &str) -> Vec<String> {
     out
 }
 
-/// Smallest byte-length window in `content` that contains at least one
-/// hit from every distinct query token that actually appears. Returns
-/// `None` if fewer than two distinct tokens are present.
 fn proximity_window(content: &str, qtokens: &[String]) -> Option<usize> {
     if qtokens.len() < 2 {
         return None;
     }
     let lower = content.to_ascii_lowercase();
-    // Gather all occurrences: (token_idx, byte_pos, token_len).
     let mut occurrences: Vec<(usize, usize, usize)> = Vec::new();
     for (idx, t) in qtokens.iter().enumerate() {
         if t.is_empty() {
@@ -478,7 +440,6 @@ fn proximity_window(content: &str, qtokens: &[String]) -> Option<usize> {
         return None;
     }
 
-    // Sliding window covering every distinct present token index.
     let mut counts: HashMap<usize, usize> = HashMap::with_capacity(present.len());
     let mut covered = 0usize;
     let mut best = usize::MAX;
@@ -515,9 +476,6 @@ fn proximity_window(content: &str, qtokens: &[String]) -> Option<usize> {
     }
 }
 
-/// Find the vocabulary term with the smallest Levenshtein distance to
-/// `t`, provided it's within `max_dist`. Returns `None` when no term
-/// qualifies.
 fn nearest_vocab_term(t: &str, vocab: &HashSet<String>, max_dist: u32) -> Option<String> {
     let mut best: Option<(String, u32)> = None;
     let tlen = t.chars().count();
@@ -540,8 +498,6 @@ fn nearest_vocab_term(t: &str, vocab: &HashSet<String>, max_dist: u32) -> Option
     best.map(|(w, _)| w)
 }
 
-/// Classic Wagner-Fischer Levenshtein with an early bail-out once every
-/// row value exceeds `max_dist`. Returns `max_dist + 1` on bail-out.
 fn levenshtein_bounded(a: &str, b: &str, max_dist: u32) -> u32 {
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
@@ -698,9 +654,6 @@ mod tests {
 
     #[test]
     fn snippet_survives_multibyte_content() {
-        // Pack enough text around an em-dash to push the 80-char window
-        // straight through the multi-byte codepoint, which used to
-        // panic with "byte index is not a char boundary".
         let mut content = String::new();
         content.push_str(&"x".repeat(70));
         content.push_str(" — em-dash landing zone — ");
@@ -726,7 +679,6 @@ mod tests {
         let content = "alpha one two three delta cache beta";
         let qt = tokenize_query("delta cache");
         let window = proximity_window(content, &qt).unwrap();
-        // "delta cache" spans 11 chars (len("delta cache")).
         assert_eq!(window, "delta cache".len());
     }
 
@@ -809,7 +761,6 @@ mod tests {
             limit: 5,
             kinds: vec![],
         };
-        // `dalta` is a typo of the indexed title `compute_delta`.
         let hits = engine.hybrid_search("/tmp/p", "dalta", &opts).unwrap();
         assert!(
             !hits.is_empty(),

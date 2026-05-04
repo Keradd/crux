@@ -1,5 +1,3 @@
-//! `crux reindex` / `crux search` — Layer 6 surface.
-
 use std::collections::HashSet;
 use std::path::PathBuf;
 
@@ -19,23 +17,14 @@ use crate::Cli;
 
 #[derive(Debug, Default, ClapArgs)]
 pub struct ReindexArgs {
-    /// Drop existing chunks before re-indexing.
     #[arg(long)]
     pub force: bool,
-    /// Skip prose (markdown / text) — only re-chunk the AST graph.
     #[arg(long)]
     pub no_prose: bool,
-    /// Skip code chunks — only re-chunk prose. Useful when only docs changed.
     #[arg(long)]
     pub no_code: bool,
-    /// Skip the memory scanner (CLAUDE.md, MEMORY.md, .crux/memory/*.md,
-    /// $CRUX_HOME/memory/*.md). Leave it on to keep agent rules/notes
-    /// searchable via `crux search --kind memory`.
     #[arg(long)]
     pub no_memory: bool,
-    /// Override project root (default: autodetect). Mirrors `crux index
-    /// --dir` so `crux init --index` can pipe the freshly scaffolded
-    /// project straight through.
     #[arg(long, value_name = "DIR")]
     pub dir: Option<PathBuf>,
 }
@@ -44,18 +33,11 @@ pub struct ReindexArgs {
 pub struct SearchArgs {
     #[arg(value_name = "QUERY")]
     pub query: String,
-    /// Limit the result list.
     #[arg(long, default_value_t = 10)]
     pub limit: usize,
-    /// Filter by chunk kind: code | prose | symbol | memory.
-    /// Repeat to allow multiple kinds.
     #[arg(long = "kind", value_name = "KIND")]
     pub kinds: Vec<String>,
 }
-
-// ─────────────────────────────────────────────────────────────────────────
-// crux reindex
-// ─────────────────────────────────────────────────────────────────────────
 
 pub fn run_reindex(cli: &Cli, args: &ReindexArgs) -> Result<()> {
     let project = args
@@ -69,15 +51,10 @@ pub fn run_reindex(cli: &Cli, args: &ReindexArgs) -> Result<()> {
     let sync = MerkleSync::new(&runtime.conn, &project, SCOPE_CHUNKS);
 
     if args.force {
-        // Rebuild from scratch: drop every chunk + snapshot so the diff
-        // below treats every current file as `added`.
         indexer.purge_project(&key)?;
         sync.purge()?;
     }
 
-    // Gather the union of paths that could produce chunks. AST paths
-    // come from Layer 5 output; prose paths come from a filesystem walk;
-    // memory paths come from well-known agent files under project + home.
     let crux_home = paths::crux_home().ok();
     let mut tracked: HashSet<String> = HashSet::new();
     if !args.no_code {
@@ -100,12 +77,8 @@ pub fn run_reindex(cli: &Cli, args: &ReindexArgs) -> Result<()> {
     let stored = sync.load()?;
     let changes = MerkleSync::diff(&current, &stored);
 
-    // Paths whose chunks we must (re)build. When `--force` was passed
-    // the snapshot is empty, so every current path lands in `added`.
     let changed: HashSet<String> = changes.changed();
 
-    // Purge chunks for files that disappeared from disk / were excluded
-    // by --no-code / --no-prose now.
     let chunks_removed = indexer.purge_files(&key, &changes.removed)?;
     sync.remove(&changes.removed)?;
 
@@ -164,9 +137,6 @@ pub fn run_reindex(cli: &Cli, args: &ReindexArgs) -> Result<()> {
         }
     }
 
-    // Commit the fresh snapshot so the next run sees today's state as
-    // the baseline. Done after chunking so a mid-run crash leaves the
-    // previous snapshot intact.
     sync.commit(&current)?;
 
     let total_chunks = indexer.count_chunks(&key)?;
@@ -208,10 +178,6 @@ fn print_merkle_summary(cli: &Cli, changes: &FileChangeSet, chunks_removed: u64)
         chunks_removed,
     );
 }
-
-// ─────────────────────────────────────────────────────────────────────────
-// crux search
-// ─────────────────────────────────────────────────────────────────────────
 
 pub fn run_search(cli: &Cli, args: &SearchArgs) -> Result<()> {
     let project = resolve_project_root(cli.project.as_deref());

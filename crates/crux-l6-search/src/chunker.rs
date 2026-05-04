@@ -1,15 +1,3 @@
-//! Build [`Chunk`]s from on-disk artefacts.
-//!
-//! Two flavors today:
-//! - [`chunks_from_ast`] reads `ast_nodes` (already produced by Layer 5)
-//!   and slices the underlying source file into one chunk per indexable
-//!   symbol (functions, methods, classes, types, constants).
-//! - [`chunks_from_prose`] walks markdown / text files and breaks each
-//!   into paragraph-sized chunks.
-//!
-//! Both flavors produce content suitable for both BM25 and dense
-//! embedding paths.
-
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -23,22 +11,12 @@ const PROSE_EXTENSIONS: &[&str] = &["md", "markdown", "txt", "rst", "mdx"];
 const MAX_PROSE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_PARAGRAPH_CHARS: usize = 4000;
 const MIN_PARAGRAPH_CHARS: usize = 16;
-/// Filenames owned by the memory scanner, not the prose walker. Skipped
-/// inside the generic prose walk so the two pipelines don't double-index
-/// the same file under different content types.
 const MEMORY_RESERVED_FILENAMES: &[&str] = &["CLAUDE.md", "MEMORY.md", "CLAUDE.local.md"];
 
-/// Build chunks for every indexable AST node belonging to `project_root`.
-///
-/// Reads from `ast_nodes` directly so the Layer 5 graph remains the
-/// single source of truth for symbol metadata.
 pub fn chunks_from_ast(conn: &Connection, project_root: &Path) -> Result<Vec<Chunk>> {
     chunks_from_ast_filtered(conn, project_root, None)
 }
 
-/// Same as [`chunks_from_ast`] but skips any node whose `file_path` is
-/// not in `only` (when `Some`). `None` disables the filter. Used by the
-/// reindexer after Merkle diff to avoid re-chunking unchanged files.
 pub fn chunks_from_ast_filtered(
     conn: &Connection,
     project_root: &Path,
@@ -88,8 +66,6 @@ pub fn chunks_from_ast_filtered(
             }
         }
 
-        // Cache the most recently read file so consecutive nodes from the
-        // same file don't trigger repeated IO.
         let lines = match &current_file {
             Some((p, ls)) if p == &file_path => ls.clone(),
             _ => {
@@ -143,14 +119,10 @@ pub fn chunks_from_ast_filtered(
     Ok(out)
 }
 
-/// Walk a directory and emit prose chunks (markdown, text, …).
 pub fn chunks_from_prose(project_root: &Path) -> Result<Vec<Chunk>> {
     chunks_from_prose_filtered(project_root, None)
 }
 
-/// Same as [`chunks_from_prose`] but skips any file whose
-/// project-relative path is not in `only` (when `Some`). Used by the
-/// reindexer after Merkle diff.
 pub fn chunks_from_prose_filtered(
     project_root: &Path,
     only: Option<&HashSet<String>>,
@@ -161,9 +133,6 @@ pub fn chunks_from_prose_filtered(
     Ok(out)
 }
 
-/// List the project-relative paths of every prose file that
-/// [`chunks_from_prose`] would visit (extension match, size under
-/// `MAX_PROSE_BYTES`, skipping hidden / target / node_modules dirs).
 pub fn list_prose_files(project_root: &Path) -> Result<Vec<String>> {
     let mut out = Vec::new();
     list_prose_walk(project_root, project_root, &mut out)?;
@@ -171,9 +140,6 @@ pub fn list_prose_files(project_root: &Path) -> Result<Vec<String>> {
     Ok(out)
 }
 
-/// Project-relative paths referenced by the Layer 5 graph for
-/// `project_root`. Feeds `MerkleSync::scan` so the reindexer can diff
-/// every source file that could contribute code chunks.
 pub fn list_ast_files(conn: &Connection, project_root: &Path) -> Result<Vec<String>> {
     let key = project_root.display().to_string();
     let mut stmt = conn.prepare(
@@ -191,18 +157,6 @@ pub fn list_ast_files(conn: &Connection, project_root: &Path) -> Result<Vec<Stri
     Ok(out)
 }
 
-/// Absolute paths to every memory document the scanner would read for
-/// this project. Order is stable: project-scope first, then home-scope.
-///
-/// Sources, in order:
-/// 1. `<project>/CLAUDE.md`, `<project>/MEMORY.md`, `<project>/CLAUDE.local.md`
-/// 2. `<project>/.crux/memory/*.md`
-/// 3. `<crux_home>/CLAUDE.md`, `<crux_home>/MEMORY.md`
-/// 4. `<crux_home>/memory/*.md`
-///
-/// Non-existent entries are silently skipped. Caller treats the result
-/// as opaque absolute paths suitable for `MerkleSync::scan`; returned
-/// strings are deduplicated while preserving the order above.
 pub fn list_memory_files(project_root: &Path, crux_home: Option<&Path>) -> Result<Vec<String>> {
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -222,11 +176,9 @@ pub fn list_memory_files(project_root: &Path, crux_home: Option<&Path>) -> Resul
         }
     };
 
-    // Project-scope singletons.
     for name in MEMORY_RESERVED_FILENAMES {
         push_if_file(project_root.join(name), &mut out);
     }
-    // Project-scope memory/*.md directory.
     if let Ok(entries) = std::fs::read_dir(project_root.join(".crux").join("memory")) {
         let mut dir_out = Vec::new();
         for entry in entries.flatten() {
@@ -263,11 +215,6 @@ pub fn list_memory_files(project_root: &Path, crux_home: Option<&Path>) -> Resul
     Ok(out)
 }
 
-/// Read every memory document listed by [`list_memory_files`] and emit
-/// paragraph-sized chunks tagged with [`ContentType::Memory`]. When
-/// `only` is `Some(set)`, files not in the set are skipped — this is
-/// how the Merkle reindexer avoids re-chunking unchanged memory files.
-/// The chunk's `file_path` is the absolute path (stable across projects).
 pub fn chunks_from_memory_filtered(
     project_root: &Path,
     crux_home: Option<&Path>,
@@ -293,7 +240,6 @@ pub fn chunks_from_memory_filtered(
     Ok(out)
 }
 
-/// Convenience wrapper that scans every memory file without filtering.
 pub fn chunks_from_memory(project_root: &Path, crux_home: Option<&Path>) -> Result<Vec<Chunk>> {
     chunks_from_memory_filtered(project_root, crux_home, None)
 }
@@ -333,7 +279,6 @@ fn walk(
             continue;
         }
         if MEMORY_RESERVED_FILENAMES.contains(&name.as_str()) {
-            // Owned by the memory scanner.
             continue;
         }
         let meta = match std::fs::metadata(&path) {
@@ -423,7 +368,6 @@ fn split_text(
     content_type: ContentType,
 ) -> Vec<Chunk> {
     let mut chunks = Vec::new();
-    // Track 1-indexed line numbers as we walk.
     let mut buf = String::new();
     let mut buf_start_line: u32 = 1;
     let mut current_line: u32 = 1;
@@ -456,7 +400,6 @@ fn split_text(
 
     for line in body.split_inclusive('\n') {
         if line.trim().is_empty() {
-            // Paragraph boundary.
             flush(
                 &mut buf,
                 buf_start_line,
@@ -584,7 +527,6 @@ mod tests {
         let files = list_memory_files(project.path(), None).unwrap();
         assert_eq!(files.len(), 2);
 
-        // Only allow CLAUDE.md through.
         let claude = project.path().join("CLAUDE.md").display().to_string();
         let allow: HashSet<String> = [claude.clone()].into_iter().collect();
         let chunks = chunks_from_memory_filtered(project.path(), None, Some(&allow)).unwrap();

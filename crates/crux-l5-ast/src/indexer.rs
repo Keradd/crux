@@ -1,17 +1,3 @@
-//! Project walker that drives [`crate::extract::parse`] over every
-//! supported file in a directory tree and persists the results via
-//! [`crate::graph::GraphStore`].
-//!
-//! Honors `.gitignore` + `.ignore` via the `ignore` crate. Files we don't
-//! recognise the language of are skipped silently — the indexer never
-//! errors on a "bad" file, only on IO/DB problems.
-//!
-//! Reindexes are incremental by default: a [`MerkleSync`] snapshot
-//! keyed on [`SCOPE_AST`] is consulted per file; only files whose
-//! content hash changed (or never existed) are re-parsed. Files that
-//! vanished from disk get their nodes + edges purged. Pass `force =
-//! true` to wipe the AST graph + snapshot and re-parse every file.
-
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -29,8 +15,6 @@ use crate::types::{IndexStats, Language};
 
 const MAX_FILE_BYTES: u64 = 5 * 1024 * 1024; // 5 MB hard cap
 
-/// One file that phase 1 has parsed for signatures. Phase 2 consults
-/// `changed` to decide whether to re-parse + re-emit nodes/edges.
 struct ScannedFile {
     rel: String,
     content: String,
@@ -43,15 +27,10 @@ struct ScannedFile {
     path: PathBuf,
 }
 
-/// Re-index the project incrementally. Equivalent to
-/// `index_project_with(conn, project_root, false)`.
 pub fn index_project(conn: &Connection, project_root: &Path) -> Result<IndexStats> {
     index_project_with(conn, project_root, false)
 }
 
-/// Re-index the project. When `force` is true, drop the snapshot +
-/// every `ast_*` row for this project before walking so every file is
-/// re-parsed from scratch.
 pub fn index_project_with(
     conn: &Connection,
     project_root: &Path,
@@ -76,19 +55,6 @@ pub fn index_project_with(
     let mut stats = IndexStats::default();
     let mut present: HashSet<String> = HashSet::new();
 
-    // ─── Phase 1 ──────────────────────────────────────────────────────
-    // Walk the tree, hash + read every file, collect per-file
-    // signatures, and fold them into a project-wide aggregate so
-    // phase 2 can resolve cross-file fn / method / enum calls.
-    //
-    // L5.12.5: the signature aggregate needs *every* file's signatures,
-    // but we try [`sig_cache::load`] before re-parsing. A cache hit
-    // deserializes the previously-written `FileTypes` blob straight
-    // from `ast_file_signatures` and skips the tree-sitter pass for
-    // that file entirely. Cache misses parse as before and UPSERT the
-    // resulting signatures so the next run is fast. `--force` bypasses
-    // the cache (we wiped it above). The writer half (purge + upsert)
-    // still honours Merkle and only runs for changed files in phase 2.
     let mut scanned: Vec<ScannedFile> = Vec::new();
     let mut project_types = ProjectFileTypes::new();
 
@@ -146,10 +112,6 @@ pub fn index_project_with(
             }
         };
 
-        // Try the persistent signature cache first. The row is keyed
-        // on (project, file_path) + content_hash, so a modified file
-        // automatically misses and re-parses. `force` bypasses the
-        // cache because we wiped the whole project's rows above.
         let cached = if force {
             None
         } else {
@@ -170,8 +132,6 @@ pub fn index_project_with(
             stats.files_signature_cached += 1;
             ft
         } else {
-            // Collect signatures under catch_unwind so a malformed file
-            // can't kill the entire walk.
             let lang_for_panic = lang.clone();
             let content_ref = content.clone();
             let sigs = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -219,11 +179,6 @@ pub fn index_project_with(
         });
     }
 
-    // ─── Phase 2 ──────────────────────────────────────────────────────
-    // For changed files, re-parse with the merged project signatures
-    // so cross-file receiver typing lights up, then purge + write +
-    // commit. Unchanged files were only touched for signature
-    // collection and stay as-is.
     for sf in &scanned {
         if !sf.changed {
             stats.files_unchanged += 1;
@@ -271,9 +226,6 @@ pub fn index_project_with(
         stats.edges_upserted += e as u64;
     }
 
-    // Files in the previous snapshot but not seen this pass — typically
-    // deleted or renamed. Drop their graph rows + snapshot entries so
-    // stale nodes don't keep haunting queries.
     let stored = sync.load()?;
     let mut removed: Vec<String> = stored
         .keys()
@@ -290,8 +242,6 @@ pub fn index_project_with(
         stats.files_removed = removed.len() as u64;
     }
 
-    // L5.5 — run project-wide call resolution now that every file has
-    // been persisted. Per-file resolution already ran inside `parse`.
     let _ = store.resolve_cross_file_calls(&project_key)?;
     Ok(stats)
 }
@@ -383,7 +333,6 @@ impl Foo { pub fn bar(&self) {} }
         let conn = crux_core::db::open_in_memory().unwrap();
         let _ = index_project(&conn, dir.path()).unwrap();
 
-        // Edit just util.rs.
         std::fs::write(
             dir.path().join("src/util.rs"),
             "pub fn helper() -> bool { false }\npub fn other() {}\n",
@@ -398,7 +347,6 @@ impl Foo { pub fn bar(&self) {} }
             "the untouched file's signature should be served from the cache"
         );
 
-        // The newly-added `other` fn should be visible now.
         let store = GraphStore::new(&conn);
         let key = dir.path().to_string_lossy().to_string();
         let nodes = store.find_symbol(&key, "other", None).unwrap();
@@ -432,7 +380,6 @@ impl Foo { pub fn bar(&self) {} }
             .unwrap()
             .is_empty());
 
-        // Before the deletion the signature row for `gone.rs` exists.
         let sig_rows_before: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM ast_file_signatures
@@ -489,9 +436,6 @@ impl Foo { pub fn bar(&self) {} }
 
     #[test]
     fn cross_file_call_edges_get_resolved_after_index() {
-        // Two-file project: `main.rs` calls `compute_delta()` which is
-        // defined uniquely in `delta.rs`. After indexing, the CALLS edge
-        // should point at the full FQN and live in the RESOLVED tier.
         let dir = tempfile::tempdir().unwrap();
         let src = dir.path().join("src");
         std::fs::create_dir_all(&src).unwrap();
@@ -524,16 +468,8 @@ impl Foo { pub fn bar(&self) {} }
         assert_eq!(tier, "RESOLVED");
     }
 
-    // ─────────────────────────────────────────────────────────────────
-    // L5.12: cross-file return-type inference via ProjectFileTypes.
-    // ─────────────────────────────────────────────────────────────────
-
     #[test]
     fn cross_file_let_binding_resolves_via_project_signatures() {
-        // file_a declares `fn make_foo() -> Foo`. file_b does
-        // `let x = make_foo(); x.bar();` — `x` has to be pinned to
-        // `Foo` via the project-wide FileTypes aggregate because
-        // file_b doesn't see `make_foo`'s signature locally.
         let dir = tempfile::tempdir().unwrap();
         let src = dir.path().join("src");
         std::fs::create_dir_all(&src).unwrap();
@@ -579,10 +515,6 @@ impl Foo { pub fn bar(&self) {} }
 
     #[test]
     fn cross_file_conflicting_fn_return_types_remain_ambiguous() {
-        // Two different files export `fn make() -> <different types>`.
-        // A third file calling `let x = make(); x.run();` must NOT
-        // pick a winner — the project-wide aggregate flags `make` as
-        // ambiguous and drops it.
         let dir = tempfile::tempdir().unwrap();
         let src = dir.path().join("src");
         std::fs::create_dir_all(&src).unwrap();
@@ -628,7 +560,6 @@ impl Foo { pub fn bar(&self) {} }
             .unwrap()
             .collect::<std::result::Result<_, _>>()
             .unwrap();
-        // Neither Foo::run nor Bar::run should be picked — ambiguous.
         assert!(
             !targets.iter().any(|t| t.ends_with("::Foo::run")),
             "ambiguous make() should not bind x to Foo, got {:?}",
@@ -643,12 +574,6 @@ impl Foo { pub fn bar(&self) {} }
 
     #[test]
     fn cross_file_method_return_type_resolves() {
-        // file_a declares `impl Foo { fn produce(&self) -> Bar {} }`
-        // and file_b binds `foo: &Foo` as a param, then calls
-        // `let x = foo.produce(); x.run();`. The `(Foo, produce) → Bar`
-        // entry lives in the project aggregate (not in file_b's own
-        // FileTypes), so this test exercises the cross-file
-        // method_returns path.
         let dir = tempfile::tempdir().unwrap();
         let src = dir.path().join("src");
         std::fs::create_dir_all(&src).unwrap();
@@ -695,11 +620,6 @@ impl Foo { pub fn bar(&self) {} }
 
     #[test]
     fn cross_file_user_enum_variant_resolves() {
-        // file_a declares `enum MyResult<T, E> { Hit(T), ... }` plus
-        // `fn make() -> MyResult<Foo, Bar>`. file_b does
-        // `if let Hit(x) = make() { x.run(); }` — requires the
-        // (MyResult, Hit) entry AND the make() generics entry to be
-        // known project-wide.
         let dir = tempfile::tempdir().unwrap();
         let src = dir.path().join("src");
         std::fs::create_dir_all(&src).unwrap();
@@ -746,20 +666,8 @@ impl Foo { pub fn bar(&self) {} }
         );
     }
 
-    // ─────────────────────────────────────────────────────────────────
-    // L5.12.5: DB-persisted per-file signatures.
-    // ─────────────────────────────────────────────────────────────────
-
     #[test]
     fn cached_signature_still_feeds_cross_file_inference() {
-        // file_a declares `fn make_foo() -> Foo` (plus `Foo::bar`).
-        // file_b calls `let x = make_foo(); x.bar();`. After the first
-        // index, file_a's signature lives in `ast_file_signatures`.
-        // We then modify ONLY file_b and re-index. The cross-file
-        // `Foo::bar` call must still resolve, proving the cached
-        // FileTypes blob seeded `ProjectFileTypes` correctly (i.e.
-        // the bincode round-trip preserves fn_returns / method_returns
-        // entries).
         let dir = tempfile::tempdir().unwrap();
         let src = dir.path().join("src");
         std::fs::create_dir_all(&src).unwrap();
@@ -788,8 +696,6 @@ impl Foo { pub fn bar(&self) {} }
         assert_eq!(first.files_scanned, 2);
         assert_eq!(first.files_signature_cached, 0);
 
-        // Touch only file_b so file_a's sig is served from the cache
-        // on the second run.
         std::fs::write(
             src.join("b.rs"),
             r#"
@@ -829,8 +735,6 @@ impl Foo { pub fn bar(&self) {} }
 
     #[test]
     fn modified_file_refreshes_its_cached_signature() {
-        // After editing a file its `ast_file_signatures` row should get
-        // updated in place (UPSERT) rather than duplicated.
         let dir = tempfile::tempdir().unwrap();
         let src = dir.path().join("src");
         std::fs::create_dir_all(&src).unwrap();
@@ -883,12 +787,6 @@ impl Foo { pub fn bar(&self) {} }
 
     #[test]
     fn cross_file_user_enum_struct_variant_resolves() {
-        // L5.13a: file_a declares a struct-style enum variant + a
-        // producer fn; file_b pattern-matches the producer's return
-        // value and calls a method on the bound field. The binding
-        // needs the `enum_struct_variants` entry from file_a to be
-        // present in the project aggregate (not just file_a's local
-        // FileTypes) for this to resolve.
         let dir = tempfile::tempdir().unwrap();
         let src = dir.path().join("src");
         std::fs::create_dir_all(&src).unwrap();
@@ -938,12 +836,6 @@ impl Foo { pub fn bar(&self) {} }
 
     #[test]
     fn cross_file_tuple_typed_local_destructure_resolves() {
-        // L5.13b: file_a exports `fn make_pair() -> (Foo, Bar)` plus
-        // the `Foo::run` / `Bar::run` methods. file_b binds the call
-        // result to a single local first (`let x = make_pair()`), then
-        // destructures it (`let (a, b) = x`). Both `a.run()` and
-        // `b.run()` must resolve via the project-wide
-        // `fn_returns_tuple` aggregate seeding `locals_tuple`.
         let dir = tempfile::tempdir().unwrap();
         let src = dir.path().join("src");
         std::fs::create_dir_all(&src).unwrap();
@@ -1033,18 +925,8 @@ impl Foo { pub fn bar(&self) {} }
         );
     }
 
-    // ─────────────────────────────────────────────────────────────────
-    // L5.13g: tsconfig path-mapping end-to-end through `index_project`.
-    // ─────────────────────────────────────────────────────────────────
-
     #[test]
     fn ts_default_import_via_tsconfig_alias_resolves_after_index() {
-        // Full-pipeline check: tree-sitter parses `export default
-        // function bar`, the file-local resolver promotes the bare
-        // `Foo()` call to `@/utils/x.default` via the `import Foo from
-        // '@/utils/x'` table, and then `resolve_cross_file_calls` uses
-        // the L5.13g path-mapping resolver to upgrade the edge to
-        // `src/utils/x::bar`.
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("tsconfig.json"),
@@ -1086,13 +968,6 @@ impl Foo { pub fn bar(&self) {} }
 
     #[test]
     fn ts_named_import_via_tsconfig_alias_resolves_after_index() {
-        // L5.13h full-pipeline: `export function bar`, `import { bar }
-        // from '@/utils/x'; bar();`. The file-local resolver promotes
-        // the bare `bar()` call to `@/utils/x.bar`, and
-        // `resolve_cross_file_calls` uses the L5.13h modspec arm to
-        // upgrade it to `src/utils/x::bar`. Two `bar`s in different
-        // modules so the leaf-name fallback alone would be ambiguous —
-        // only the modspec-aware arm can pick the right one.
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("tsconfig.json"),
@@ -1112,7 +987,6 @@ impl Foo { pub fn bar(&self) {} }
             "export function bar() { return 1; }\n",
         )
         .unwrap();
-        // Ambiguator: another module exposes the same leaf name.
         std::fs::write(
             src.join("other/z.ts"),
             "export function bar() { return 2; }\n",
@@ -1141,9 +1015,6 @@ impl Foo { pub fn bar(&self) {} }
 
     #[test]
     fn ts_named_import_relative_resolves_after_index() {
-        // L5.13h full-pipeline with a relative spec (no tsconfig).
-        // Proves the modspec arm also lifts disambiguation for plain
-        // `./x`-style imports, not just tsconfig aliases.
         let dir = tempfile::tempdir().unwrap();
         let src = dir.path().join("src");
         std::fs::create_dir_all(&src).unwrap();
@@ -1176,18 +1047,6 @@ impl Foo { pub fn bar(&self) {} }
 
     #[test]
     fn ts_namespace_import_via_tsconfig_alias_resolves_after_index() {
-        // L5.13i full-pipeline: `export function bar`,
-        // `import * as utils from '@/utils/x'; utils.bar();`.
-        // Tree-sitter parses the call as `call_expression` with a
-        // `member_expression` callee, so the extractor records
-        // `target_qn = "utils.bar"`. The file-local resolver's
-        // namespace arm rewrites that to `@/utils/x.bar` via the
-        // `namespace_imports` map, then `resolve_cross_file_calls`
-        // upgrades it through the L5.13h modspec arm to
-        // `src/utils/x::bar`. Two `bar`s in different modules ensure
-        // the leaf-name fallback alone would be ambiguous — only the
-        // namespace-aware rewrite + modspec arm can pick the right
-        // one.
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("tsconfig.json"),
@@ -1207,7 +1066,6 @@ impl Foo { pub fn bar(&self) {} }
             "export function bar() { return 1; }\n",
         )
         .unwrap();
-        // Ambiguator: another module exposes the same leaf name.
         std::fs::write(
             src.join("other/z.ts"),
             "export function bar() { return 2; }\n",
@@ -1237,11 +1095,6 @@ impl Foo { pub fn bar(&self) {} }
 
     #[test]
     fn ts_namespace_import_relative_resolves_after_index() {
-        // L5.13i full-pipeline with a relative spec (no tsconfig).
-        // `import * as ns from './x'; ns.foo();` — namespace rewrite
-        // produces `./x.foo`, which the L5.13h modspec arm resolves
-        // to `src/x::foo`. Two `foo`s ensure leaf-name fallback alone
-        // is ambiguous.
         let dir = tempfile::tempdir().unwrap();
         let src = dir.path().join("src");
         std::fs::create_dir_all(&src).unwrap();

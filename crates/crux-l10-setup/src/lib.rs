@@ -1,17 +1,3 @@
-//! CRUX Layer 10 — project initialization scaffolding.
-//!
-//! Goal: lay down the four "essential" files so the agent loads
-//! ~800 tokens at session start instead of ~11k of unfiltered project
-//! documentation. Pattern adapted from nadimtuhin/claude-token-optimizer.
-//!
-//! Public surface:
-//! - [`detect_project_type`] — auto-detect language/framework
-//! - [`InitOptions`] / [`init`] — perform the scaffold
-//! - [`profiles`] / [`templates`] — exposed for inspection and tests
-//! - [`setup`] — register CRUX as an MCP server (and hooks where
-//!   supported) inside Claude Code, Claude Desktop, Cursor, Windsurf,
-//!   Cline, and Zed
-
 pub mod profiles;
 pub mod setup;
 pub mod templates;
@@ -21,10 +7,6 @@ use std::path::{Path, PathBuf};
 
 use crux_core::config::{self, Config};
 use crux_core::error::{CruxError, Result};
-
-// ─────────────────────────────────────────────────────────────────────────
-// Project detection
-// ─────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProjectType {
@@ -76,22 +58,13 @@ pub fn detect_project_type(root: &Path) -> ProjectType {
     ProjectType::Generic
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// init()
-// ─────────────────────────────────────────────────────────────────────────
-
 #[derive(Debug, Clone)]
 pub struct InitOptions {
     pub project_root: PathBuf,
-    /// Profile name (e.g. "coding", "analysis", "agents").
     pub profile: String,
-    /// Free-text project type override; defaults to autodetect label.
     pub project_type: Option<String>,
-    /// Free-text stack description (e.g. "Express, PostgreSQL, Prisma").
     pub stack: Option<String>,
-    /// Free-text features description.
     pub features: Option<String>,
-    /// Overwrite existing CRUX scaffolding if present.
     pub force: bool,
 }
 
@@ -103,9 +76,6 @@ pub struct InitReport {
     pub profile: String,
 }
 
-/// Run the scaffold. Idempotent: existing files are skipped unless
-/// `force=true`. Returns the list of paths written/skipped for the CLI to
-/// surface.
 pub fn init(opts: &InitOptions) -> Result<InitReport> {
     let root = &opts.project_root;
     if !root.is_dir() {
@@ -132,7 +102,6 @@ pub fn init(opts: &InitOptions) -> Result<InitReport> {
     let mut written = Vec::new();
     let mut skipped = Vec::new();
 
-    // 1. Directory tree
     for sub in [
         ".crux",
         ".crux/completions",
@@ -150,7 +119,6 @@ pub fn init(opts: &InitOptions) -> Result<InitReport> {
         }
     }
 
-    // 2. CLAUDE.md
     let meta = templates::ProjectMeta {
         project_type: &project_type_label,
         stack: &stack,
@@ -166,7 +134,6 @@ pub fn init(opts: &InitOptions) -> Result<InitReport> {
         &mut skipped,
     )?;
 
-    // 3. Static .crux/ docs
     write_file(
         &root.join(".crux/COMMON_MISTAKES.md"),
         templates::COMMON_MISTAKES,
@@ -210,8 +177,6 @@ pub fn init(opts: &InitOptions) -> Result<InitReport> {
         &mut skipped,
     )?;
 
-    // 4. .claudeignore — only write if absent or force; users may already
-    //    have one with project-specific rules.
     write_file(
         &root.join(".claudeignore"),
         templates::CLAUDEIGNORE,
@@ -220,12 +185,9 @@ pub fn init(opts: &InitOptions) -> Result<InitReport> {
         &mut skipped,
     )?;
 
-    // 5. .crux/config.toml — start from defaults so the project has a
-    //    discoverable knob set even if values are unchanged.
     let cfg_path = root.join(".crux/config.toml");
     if !cfg_path.exists() || opts.force {
         let mut cfg = Config::default();
-        // Set the chosen profile.
         cfg.layer.l1.profile = profile.name.into();
         config::save(&cfg, &cfg_path)?;
         written.push(cfg_path);
@@ -265,10 +227,6 @@ fn write_file(
     written.push(path.to_path_buf());
     Ok(())
 }
-
-// ─────────────────────────────────────────────────────────────────────────
-// Tests
-// ─────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -327,7 +285,6 @@ mod tests {
         let r1 = init(&opts).unwrap();
         let r2 = init(&opts).unwrap();
         assert!(!r1.written.is_empty());
-        // Second run should skip all the same files it wrote.
         assert!(
             r2.skipped.len() >= r1.written.len(),
             "expected skip count >= initial write count"
@@ -346,7 +303,6 @@ mod tests {
             force: false,
         };
         init(&opts).unwrap();
-        // tamper with CLAUDE.md
         let claude = dir.path().join("CLAUDE.md");
         std::fs::write(&claude, "tampered").unwrap();
         opts.force = true;

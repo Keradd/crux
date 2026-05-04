@@ -1,9 +1,3 @@
-//! Per-kind decay configuration loader + scoring helper.
-//!
-//! `decay_config` rows are seeded by migration 003. We re-read them at
-//! engine init so user overrides via `INSERT OR REPLACE INTO decay_config`
-//! take effect immediately without code changes.
-
 use std::collections::HashMap;
 
 use rusqlite::Connection;
@@ -21,8 +15,6 @@ pub struct DecayParams {
 
 impl DecayParams {
     fn default_for(kind: ObservationKind) -> Self {
-        // Mirror of migration 003 defaults — used as a fallback if the
-        // row is missing.
         match kind {
             ObservationKind::Guardrail => DecayParams {
                 decay_rate: 1.0,
@@ -103,16 +95,6 @@ impl DecayTable {
     }
 }
 
-/// Apply decay to a stored relevance score.
-///
-/// Formula: `max(stored * decay_rate^days_since_access, min_score)`.
-/// Days are computed from the supplied `now_epoch` and
-/// `last_accessed_epoch`; if the latter is `None` we use
-/// `created_at_epoch`.
-///
-/// `boost_on_access` is added once each time the observation is read; it
-/// is applied at recall time, not here, so the persisted value is the
-/// one users see in `crux memory dump`.
 pub fn decayed_score(
     params: DecayParams,
     stored_score: f64,
@@ -141,7 +123,6 @@ mod tests {
     #[test]
     fn project_decays_over_time() {
         let p = DecayParams::default_for(ObservationKind::Project);
-        // 30 days at rate 0.99 → ~0.74
         let s = decayed_score(p, 1.0, 0, 86_400 * 30);
         assert!(s < 1.0 && s > 0.7, "got {s}");
     }

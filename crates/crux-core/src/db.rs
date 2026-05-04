@@ -1,10 +1,3 @@
-//! SQLite wrapper with WAL mode and a numbered-migration runner.
-//!
-//! Migrations live in `crates/crux-core/migrations/NNN_name.sql` and are
-//! embedded into the binary at compile time. They run in numeric order and
-//! are tracked in the `crux_migrations` table so a reopened DB only applies
-//! new ones.
-
 use std::path::{Path, PathBuf};
 
 use rusqlite::{params, Connection, OpenFlags};
@@ -12,15 +5,12 @@ use tracing::debug;
 
 use crate::error::{CruxError, Result};
 
-/// Single embedded migration definition.
 struct Migration {
     version: u32,
     name: &'static str,
     sql: &'static str,
 }
 
-/// Embedded list of migrations applied in order. Append new entries at the
-/// bottom; never edit or reorder existing ones.
 const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 1,
@@ -79,8 +69,6 @@ const MIGRATIONS: &[Migration] = &[
     },
 ];
 
-/// Open the database at `path` (creating parent dirs and the file as
-/// needed), apply pending migrations, and return a ready-to-use connection.
 pub fn open(path: &Path) -> Result<Connection> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| CruxError::Io {
@@ -99,7 +87,6 @@ pub fn open(path: &Path) -> Result<Connection> {
     Ok(conn)
 }
 
-/// Open an in-memory database, primarily for tests.
 pub fn open_in_memory() -> Result<Connection> {
     let conn = Connection::open_in_memory()?;
     apply_pragmas(&conn)?;
@@ -108,8 +95,6 @@ pub fn open_in_memory() -> Result<Connection> {
 }
 
 fn apply_pragmas(conn: &Connection) -> Result<()> {
-    // WAL improves concurrent reader/writer performance and is what every
-    // reference repo (rtk, crg, alex, token-savior) settled on.
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "busy_timeout", 5000)?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
@@ -156,8 +141,6 @@ fn apply_migrations(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Convenience getter for the resolved DB path according to global config.
-/// Callers may override (`Config.general.db_path`); this is the default.
 pub fn default_db_path() -> Result<PathBuf> {
     crate::paths::db_path()
 }
@@ -178,7 +161,6 @@ mod tests {
     #[test]
     fn pinned_column_present_after_migrations() {
         let conn = open_in_memory().unwrap();
-        // PRAGMA table_info exposes (cid, name, type, notnull, dflt_value, pk).
         let mut stmt = conn.prepare("PRAGMA table_info(read_cache)").unwrap();
         let names: Vec<String> = stmt
             .query_map([], |r| r.get::<_, String>(1))

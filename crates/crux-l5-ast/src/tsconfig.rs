@@ -1,33 +1,3 @@
-//! L5.13g — TypeScript / JavaScript path-mapping resolver.
-//!
-//! Loads `tsconfig.json` (or `jsconfig.json`) at the project root,
-//! follows any `extends` chain, and exposes a [`JsModuleResolver`] that
-//! maps non-relative module specifiers (`@/foo`, `~components/Button`,
-//! `@app/utils/x`) to project-relative module paths via
-//! `compilerOptions.paths` and `compilerOptions.baseUrl`.
-//!
-//! The resolver is best-effort: a missing or unparseable config returns
-//! `None` and the cross-file resolver falls back to the relative-only
-//! L5.13e logic.
-//!
-//! Supported subset:
-//!
-//! - `compilerOptions.baseUrl` — anchors non-relative specs that match
-//!   no alias.
-//! - `compilerOptions.paths` — `{ pattern: [target, ...] }` with at
-//!   most one `*` per pattern / target. Targets are tried in
-//!   declaration order.
-//! - `extends` — relative path to a parent tsconfig. Child
-//!   `paths` / `baseUrl` fully replace the parent's (TypeScript
-//!   semantics). `extends` chains terminate at depth 16 or on cycle.
-//! - JSON-with-comments: `//` line comments, `/* ... */` block
-//!   comments, and trailing commas before `}` / `]` are stripped
-//!   before parsing.
-//!
-//! Out of scope (for now): npm-package `extends` (e.g.
-//! `@tsconfig/node18`), wildcards beyond a single `*`, glob targets,
-//! and `paths` resolution into `node_modules`.
-
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -39,7 +9,6 @@ use crux_core::error::{CruxError, Result};
 const KNOWN_EXTENSIONS: &[&str] = &[".d.ts", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"];
 const MAX_EXTENDS_DEPTH: usize = 16;
 
-/// Resolved tsconfig view exposing path-mapping queries.
 #[derive(Debug, Clone, Default)]
 pub struct JsModuleResolver {
     project_root: PathBuf,
@@ -76,9 +45,6 @@ struct CompilerOptions {
 }
 
 impl JsModuleResolver {
-    /// Try to load `tsconfig.json` (then `jsconfig.json`) from the
-    /// project root. Returns `None` when neither exists, parsing fails,
-    /// or the config is empty of path-mapping data.
     pub fn load(project_root: &Path) -> Option<Self> {
         for name in &["tsconfig.json", "jsconfig.json"] {
             let p = project_root.join(name);
@@ -94,11 +60,6 @@ impl JsModuleResolver {
         None
     }
 
-    /// Resolve a non-relative module spec via path mappings + baseUrl.
-    /// Returns project-relative module paths (no extension,
-    /// forward-slash separated) in TypeScript priority order. Returns
-    /// an empty vec for relative specs (`./foo`, `../bar`) and for
-    /// specs no rule covers.
     pub fn resolve(&self, spec: &str) -> Vec<String> {
         if spec.starts_with("./") || spec.starts_with("../") {
             return Vec::new();
@@ -119,9 +80,6 @@ impl JsModuleResolver {
                 }
             }
             if out.len() > prev_len {
-                // TypeScript's `paths` matches the most-specific pattern
-                // and stops; sort earlier in `load_chain` ensures
-                // concrete patterns are probed before wildcards.
                 break;
             }
         }
@@ -136,7 +94,6 @@ impl JsModuleResolver {
         out
     }
 
-    /// True iff the resolver carries any usable path-mapping data.
     pub fn is_active(&self) -> bool {
         !self.aliases.is_empty() || self.base_url.is_some()
     }
@@ -196,10 +153,6 @@ fn load_chain(
             effective.base_url = Some(path_clean::clean(config_dir.join(&bu)));
         }
         if let Some(paths) = co.paths {
-            // Anchor `paths` targets at `baseUrl` if set, otherwise at
-            // the directory holding this tsconfig — matching the
-            // TypeScript compiler's behaviour for `paths` without
-            // baseUrl since TS 4.1.
             let alias_base = effective
                 .base_url
                 .clone()
@@ -215,7 +168,6 @@ fn load_chain(
                     base_dir: alias_base.clone(),
                 });
             }
-            // More-specific patterns (longer prefix, no star) win first.
             aliases.sort_by_key(|a| std::cmp::Reverse(pattern_priority(&a.pattern)));
             effective.aliases = aliases;
         }
@@ -224,8 +176,6 @@ fn load_chain(
 }
 
 fn pattern_priority(p: &AliasPart) -> usize {
-    // Concrete patterns rank above wildcards; longer prefixes outrank
-    // shorter ones so `@app/foo/*` is tried before `@app/*`.
     let star_penalty = if p.has_star { 0 } else { 1_000_000 };
     star_penalty + p.prefix.len() + p.suffix.len()
 }
@@ -260,8 +210,6 @@ fn parse_alias_part(s: &str) -> AliasPart {
 
 fn match_pattern<'a>(p: &AliasPart, spec: &'a str) -> Option<&'a str> {
     if p.has_star {
-        // TypeScript requires `*` to consume at least one character so
-        // `@/` doesn't accidentally match `@/*`.
         if spec.len() > p.prefix.len() + p.suffix.len()
             && spec.starts_with(&p.prefix)
             && spec.ends_with(&p.suffix)
@@ -304,9 +252,6 @@ fn strip_known_ext(s: &str) -> String {
     s.to_string()
 }
 
-/// Strip `//` line comments and `/* ... */` block comments while
-/// honouring quoted strings. Trailing commas inside arrays / objects
-/// are then turned into spaces so `serde_json` accepts the document.
 pub(crate) fn strip_jsonc(src: &str) -> String {
     let mut out = String::with_capacity(src.len());
     let mut chars = src.chars().peekable();
@@ -473,15 +418,10 @@ mod tests {
             r.resolve("@/foo/bar/baz"),
             vec!["src/foo/bar/baz".to_string()]
         );
-        // `@/` (empty wildcard match) does not satisfy the alias; it
-        // can still be picked up by the baseUrl fallback, which is
-        // harmless because no real module will be named "@".
     }
 
     #[test]
     fn paths_concrete_alias_overrides_wildcard() {
-        // TypeScript probes more-specific patterns first; we sort by
-        // prefix length and `*`-presence to mirror that.
         let dir = fixture(&[(
             "tsconfig.json",
             r#"{
@@ -521,7 +461,6 @@ mod tests {
 
     #[test]
     fn paths_without_baseurl_anchors_at_config_dir() {
-        // TS 4.1+: `paths` works without an explicit `baseUrl`.
         let dir = fixture(&[(
             "tsconfig.json",
             r#"{
@@ -549,7 +488,6 @@ mod tests {
 
     #[test]
     fn extends_chain_child_paths_replace_parent() {
-        // TS semantics: child `paths` fully overrides parent `paths`.
         let dir = fixture(&[
             (
                 "base.json",
@@ -589,9 +527,6 @@ mod tests {
 
     #[test]
     fn jsonc_comments_and_trailing_commas_are_stripped() {
-        // No `baseUrl` so the alias target stays project-relative; the
-        // point of this test is the JSONC stripper, not TS
-        // baseUrl semantics.
         let dir = fixture(&[(
             "tsconfig.json",
             r#"{
@@ -625,7 +560,6 @@ mod tests {
             r#"{ "compilerOptions": { "paths": { "@/*": ["src/*"] } } }"#,
         )]);
         let r = JsModuleResolver::load(dir.path()).unwrap();
-        // No baseUrl so bare specifiers fall through.
         assert!(r.resolve("react").is_empty());
     }
 
@@ -660,15 +594,11 @@ mod tests {
             ),
             ("tsconfig.json", r#"{ "extends": "./a.json" }"#),
         ]);
-        // We don't care about the resolved paths here, only that the
-        // load terminates without a stack overflow.
         let _ = JsModuleResolver::load(dir.path());
     }
 
     #[test]
     fn ordering_independent_of_btree_iteration() {
-        // BTreeMap iterates alphabetically. Confirm specificity sort
-        // wins regardless of key order.
         let dir = fixture(&[(
             "tsconfig.json",
             r#"{

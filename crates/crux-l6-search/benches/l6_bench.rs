@@ -78,7 +78,6 @@ fn bench_index(c: &mut Criterion) {
         })
     });
 
-    // Multiple chunks
     let chunks: Vec<Chunk> = (0..10)
         .map(|i| Chunk {
             project_root: tmp.path().to_string_lossy().to_string(),
@@ -112,7 +111,6 @@ fn bench_search(c: &mut Criterion) {
     let indexer = Indexer::new(&conn);
     let searcher = SearchEngine::new(&conn, &embedder);
 
-    // Index some content
     let tmp = TempDir::new().unwrap();
     let code = r#"
 fn main() {

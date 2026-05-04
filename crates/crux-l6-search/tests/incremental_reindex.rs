@@ -1,9 +1,3 @@
-//! End-to-end integration test for the Merkle-driven incremental
-//! reindex flow. Exercises the same sequence `crux reindex` does but
-//! without the CLI harness: list prose files → scan → diff vs stored
-//! snapshot → chunk only changed files → index → purge removed →
-//! commit snapshot.
-
 use std::collections::HashSet;
 
 use crux_core::merkle::{MerkleSync, SCOPE_CHUNKS};
@@ -17,7 +11,6 @@ fn write(dir: &std::path::Path, rel: &str, body: &str) {
     std::fs::write(abs, body).unwrap();
 }
 
-/// Simulate `crux reindex --no-code` using the prose pipeline only.
 fn reindex_prose(conn: &rusqlite::Connection, project: &std::path::Path) -> (u64, u64, u64, u64) {
     let key = project.display().to_string();
     let indexer = Indexer::new(conn);
@@ -81,7 +74,6 @@ fn unchanged_files_produce_no_chunks_on_rerun() {
     assert!(inserted_first >= 1);
     assert!(produced_first >= 1);
 
-    // Second pass — nothing changed, chunker must see an empty set.
     let (inserted_second, skipped_second, removed_second, produced_second) =
         reindex_prose(&conn, dir.path());
     assert_eq!(produced_second, 0, "chunker should skip unchanged files");
@@ -106,7 +98,6 @@ fn modifying_a_file_only_reindexes_that_file() {
     let conn = crux_core::db::open_in_memory().unwrap();
     let _ = reindex_prose(&conn, dir.path());
 
-    // Only edit `a.md`.
     write(
         dir.path(),
         "a.md",
@@ -115,7 +106,6 @@ fn modifying_a_file_only_reindexes_that_file() {
     let (_, _, removed, produced) = reindex_prose(&conn, dir.path());
     assert!(produced >= 1);
     assert_eq!(removed, 0);
-    // Every produced chunk must belong to a.md — never b.md.
     let rows: Vec<String> = conn
         .prepare("SELECT DISTINCT file_path FROM chunks WHERE project_root = ? ORDER BY file_path")
         .unwrap()

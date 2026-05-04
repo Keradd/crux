@@ -1,5 +1,3 @@
-//! Shared types for the AST graph.
-
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 
@@ -59,9 +57,6 @@ pub enum EdgeKind {
     TestedBy,
     DependsOn,
     References,
-    /// L5.13e: `export default <expr>` in JS/TS. `source_qn` is
-    /// `{module_qn}:file`; `target_qn` is the local FQN (or a bare
-    /// identifier the file-local resolver upgrades to a FQN).
     ExportsDefault,
 }
 
@@ -122,12 +117,7 @@ pub enum Language {
     Python,
     TypeScript,
     JavaScript,
-    /// Phase 3 / Task G — tree-sitter-lua.
     Lua,
-    /// Phase 3 / Task G — tree-sitter-bash. Routed for `.sh` and
-    /// `.bash` files. Pure-dotfile rc scripts (`.bashrc`, `.bash_profile`)
-    /// have no `Path::extension()` so they're not auto-indexed today;
-    /// rename them or include them via an explicit indexer entry.
     Bash,
 }
 
@@ -202,20 +192,10 @@ pub struct ParseResult {
 
 #[derive(Debug, Clone, Default)]
 pub struct IndexStats {
-    /// Files actually parsed + written this run.
     pub files_scanned: u64,
-    /// Files dropped for non-Merkle reasons (too big, unknown language,
-    /// IO error, parser panic).
     pub files_skipped: u64,
-    /// Files whose content hash matched the previous snapshot and were
-    /// not re-parsed this run.
     pub files_unchanged: u64,
-    /// Files that existed in the previous snapshot but are gone from
-    /// disk; their nodes + edges were purged.
     pub files_removed: u64,
-    /// L5.12.5: files whose phase-1 signature payload was served from
-    /// `ast_file_signatures` (bincode) instead of being re-parsed.
-    /// Tracks how many file parses the signature cache saved this run.
     pub files_signature_cached: u64,
     pub nodes_upserted: u64,
     pub edges_upserted: u64,

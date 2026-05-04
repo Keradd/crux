@@ -1,8 +1,3 @@
-//! Public types for the coach engine.
-//!
-//! Mirrors the schema from alex/token-optimizer so porting telemetry
-//! dashboards later is a rename, not a rewrite.
-
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,7 +53,6 @@ impl Pattern {
     }
 }
 
-/// Derived health snapshot — produced by `CoachEngine::snapshot`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CoachData {
     pub health_score: i32,
@@ -83,7 +77,6 @@ pub struct Snapshot {
     pub unused_layers: u32,
 }
 
-/// Outcome from `check_loop`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoopCheckResult {
     pub is_loop: bool,
@@ -92,7 +85,6 @@ pub struct LoopCheckResult {
     pub warning: Option<String>,
 }
 
-/// Outcome from `check_drift`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DriftCheckResult {
     pub changed: bool,
@@ -103,8 +95,6 @@ pub struct DriftCheckResult {
     pub history_depth: u32,
 }
 
-/// Score → letter grade. Thresholds match alex/token-optimizer so
-/// existing dashboards don't need relabeling.
 pub fn score_to_grade(score: i32) -> char {
     match score {
         90..=i32::MAX => 'A',

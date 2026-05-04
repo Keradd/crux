@@ -1,27 +1,3 @@
-//! Hot-reload helper for the global + project `crux.toml` pair.
-//!
-//! [`ConfigWatcher`] holds a published [`Config`] behind an
-//! `Arc<RwLock<_>>` and re-reads both config files when their on-disk
-//! mtime changes. Readers always see a *consistent* config — the swap
-//! happens under a write lock so no reader observes a half-written
-//! intermediate state.
-//!
-//! Polling is mtime-based (no `notify` / inotify dependency). Two
-//! consumption modes:
-//!
-//! 1. Pull: call [`ConfigWatcher::tick`] from your existing event loop
-//!    whenever it makes sense (between MCP requests, before each `crux
-//!    bash` filter run, …). `tick` returns `true` on reload.
-//! 2. Push: hand the watcher to [`ConfigWatcher::spawn_polling`] which
-//!    runs a background thread that ticks on a fixed cadence and
-//!    publishes the new config in place. Drop the returned
-//!    [`WatcherHandle`] to stop the thread cleanly.
-//!
-//! Failure mode: if either config file becomes invalid mid-session, the
-//! watcher logs a warning and keeps the previously published config so
-//! a typo doesn't take the whole CRUX runtime down. The next clean
-//! parse pulls the new contents.
-
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -32,21 +8,12 @@ use crate::config::{load, Config};
 use crate::error::Result;
 use crate::Runtime;
 
-/// Default polling cadence for [`ConfigWatcher::spawn_polling`]. 1s is
-/// snappy enough to catch interactive `vi crux.toml` edits without
-/// burning measurable CPU on a long-lived MCP session.
 pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
-/// Live, hot-swappable configuration handle.
 pub struct ConfigWatcher {
-    /// The currently published config. Cloned via `Arc::clone` so
-    /// background-spawned watchers and foreground readers share state.
     config: Arc<RwLock<Config>>,
     state: Mutex<WatcherState>,
     project_root: Option<PathBuf>,
-    /// Bumped on every successful reload. Cheap counter for observers
-    /// that want to know if anything changed since they last looked
-    /// without copying the whole config.
     reload_counter: Arc<AtomicU64>,
 }
 
@@ -59,9 +26,6 @@ struct WatcherState {
 }
 
 impl ConfigWatcher {
-    /// Open the watcher: load both config files, snapshot mtimes,
-    /// and publish the merged result. Equivalent to a `Runtime::open`
-    /// for code paths that only need the config but want hot-reload.
     pub fn open(project_root: Option<PathBuf>) -> Result<Self> {
         let loaded = load(project_root.as_deref())?;
         let global_mtime = mtime_of(&loaded.global_path);
@@ -79,15 +43,6 @@ impl ConfigWatcher {
         })
     }
 
-    /// Build a watcher from an already-opened [`Runtime`] without
-    /// re-reading either config file. The watcher's initial published
-    /// config is cloned from the runtime; subsequent [`Self::tick`]
-    /// calls notice mtime changes relative to the moment this
-    /// constructor ran.
-    ///
-    /// Use this from the MCP server (or any other long-lived
-    /// subsystem) that already opened a `Runtime` and doesn't want to
-    /// pay for a redundant config parse when spinning up hot-reload.
     pub fn from_runtime(runtime: &Runtime) -> Self {
         let global_path = runtime.global_config_path.clone();
         let project_path = runtime.project_config_path.clone();
@@ -106,32 +61,18 @@ impl ConfigWatcher {
         }
     }
 
-    /// Hand out a clone of the inner `Arc<RwLock<Config>>`. Cheap
-    /// (refcount bump). Use this when you need to pass the live config
-    /// into a background subsystem that can't borrow the watcher.
     pub fn handle(&self) -> Arc<RwLock<Config>> {
         Arc::clone(&self.config)
     }
 
-    /// Cheap counter that bumps on every successful reload. Compare
-    /// against a prior value to know whether the config changed.
     pub fn reload_counter(&self) -> Arc<AtomicU64> {
         Arc::clone(&self.reload_counter)
     }
 
-    /// Take a fresh snapshot of the current config. Holds the read
-    /// lock only long enough to clone the inner struct; the lock is
-    /// released before returning so callers never accidentally serialize
-    /// long-running work behind it.
     pub fn snapshot(&self) -> Config {
         self.config.read().expect("config lock poisoned").clone()
     }
 
-    /// Check the on-disk mtimes; if either moved, re-read both files,
-    /// merge, and atomically swap. Returns `Ok(true)` on reload,
-    /// `Ok(false)` on no-op. A parse error during reload is logged and
-    /// returned as `Ok(false)` — the previously published config stays
-    /// active so a typo can't brick the runtime.
     pub fn tick(&self) -> Result<bool> {
         let mut state = self.state.lock().expect("watcher state lock poisoned");
         let new_global_mtime = mtime_of(&state.global_path);
@@ -141,9 +82,6 @@ impl ConfigWatcher {
         if !changed {
             return Ok(false);
         }
-        // mtime moved — try to re-read the bundle. Hold off on
-        // committing the new mtime until parse succeeds so a transient
-        // editor "save half-written" state retries on the next tick.
         match load(self.project_root.as_deref()) {
             Ok(loaded) => {
                 {
@@ -162,19 +100,11 @@ impl ConfigWatcher {
                     error = %e,
                     "config reload failed, keeping previous config"
                 );
-                // Don't roll mtime forward — let the next tick try
-                // again once the user finishes editing.
                 Ok(false)
             }
         }
     }
 
-    /// Spawn a background thread that polls [`Self::tick`] on a fixed
-    /// cadence. Drop the returned [`WatcherHandle`] to stop and join
-    /// the thread cleanly.
-    ///
-    /// Takes `Arc<Self>` so the spawned thread can outlive the caller's
-    /// stack frame. Use [`Arc::new`] before passing in.
     pub fn spawn_polling(self: Arc<Self>, interval: Duration) -> WatcherHandle {
         let stop = Arc::new(AtomicBool::new(false));
         let stop_for_thread = Arc::clone(&stop);
@@ -183,8 +113,6 @@ impl ConfigWatcher {
             .name("crux-config-watch".to_string())
             .spawn(move || {
                 while !stop_for_thread.load(Ordering::Relaxed) {
-                    // Sleep in small slices so an early shutdown
-                    // doesn't have to wait the full `interval`.
                     let slice = Duration::from_millis(50).min(interval);
                     let mut waited = Duration::ZERO;
                     while waited < interval {
@@ -208,16 +136,12 @@ impl ConfigWatcher {
     }
 }
 
-/// Drop guard for [`ConfigWatcher::spawn_polling`]. Drops cleanly join
-/// the polling thread.
 pub struct WatcherHandle {
     stop: Arc<AtomicBool>,
     join: Option<JoinHandle<()>>,
 }
 
 impl WatcherHandle {
-    /// Synchronously stop the polling thread without dropping the
-    /// handle. Safe to call multiple times.
     pub fn stop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(j) = self.join.take() {
@@ -243,16 +167,8 @@ mod tests {
     use std::sync::Mutex;
     use std::time::Duration;
 
-    /// `$CRUX_HOME` is process-global but cargo runs tests in parallel
-    /// by default, so every test in this module that mutates the env
-    /// var must take this lock. Without it, one test's Runtime::open
-    /// can race against another test's tempdir cleanup and fail with
-    /// SQLITE_CANTOPEN (observed on the macOS CI runner).
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
-    /// Set `$CRUX_HOME` to a tempdir for the duration of the closure,
-    /// holding [`ENV_LOCK`] across the whole call so sibling tests
-    /// don't observe a half-swapped value.
     fn with_crux_home<R>(f: impl FnOnce(&Path) -> R) -> R {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
@@ -272,11 +188,7 @@ mod tests {
         fs::write(&path, body).unwrap();
     }
 
-    /// Move the file's mtime forward by at least 2 seconds so the
-    /// SystemTime comparison flips even on filesystems with low
-    /// timestamp resolution (HFS+, ext3 with noatime, ...).
     fn touch_forward(path: &Path) {
-        // sleep_until isn't stable; sleep instead.
         std::thread::sleep(Duration::from_millis(1100));
         let body = fs::read_to_string(path).unwrap();
         fs::write(path, body).unwrap();
@@ -300,7 +212,6 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             write_project_config(dir.path(), "[layers]\nl7_sandbox = false\n");
             let w = ConfigWatcher::open(Some(dir.path().to_path_buf())).unwrap();
-            // First tick after open: nothing has changed.
             assert!(!w.tick().unwrap(), "expected no-op tick");
             assert_eq!(w.reload_counter().load(Ordering::Relaxed), 0);
         });
@@ -314,7 +225,6 @@ mod tests {
             let w = ConfigWatcher::open(Some(dir.path().to_path_buf())).unwrap();
             assert!(w.snapshot().layers.l7_sandbox);
 
-            // Edit the project config to flip l7_sandbox off.
             std::thread::sleep(Duration::from_millis(1100));
             write_project_config(dir.path(), "[layers]\nl7_sandbox = false\n");
 
@@ -331,10 +241,8 @@ mod tests {
             write_project_config(dir.path(), "[layers]\nl7_sandbox = true\n");
             let w = ConfigWatcher::open(Some(dir.path().to_path_buf())).unwrap();
             let handle = w.handle();
-            // Read through the handle and the watcher independently.
             assert!(handle.read().unwrap().layers.l7_sandbox);
             assert!(w.snapshot().layers.l7_sandbox);
-            // After reload, both views should reflect the new state.
             std::thread::sleep(Duration::from_millis(1100));
             write_project_config(dir.path(), "[layers]\nl7_sandbox = false\n");
             w.tick().unwrap();
@@ -350,7 +258,6 @@ mod tests {
             let w = ConfigWatcher::open(Some(dir.path().to_path_buf())).unwrap();
             assert!(w.snapshot().layers.l7_sandbox);
 
-            // Write garbage and tick — the previous config must persist.
             let path = dir.path().join(".crux").join("config.toml");
             std::thread::sleep(Duration::from_millis(1100));
             fs::write(&path, "not valid toml = = =").unwrap();
@@ -358,7 +265,6 @@ mod tests {
             assert!(w.snapshot().layers.l7_sandbox, "config must not be wiped");
             assert_eq!(w.reload_counter().load(Ordering::Relaxed), 0);
 
-            // Once the user fixes the file, the next tick recovers.
             std::thread::sleep(Duration::from_millis(1100));
             write_project_config(dir.path(), "[layers]\nl7_sandbox = false\n");
             assert!(w.tick().unwrap());
@@ -375,8 +281,6 @@ mod tests {
             let w = ConfigWatcher::open(Some(dir.path().to_path_buf())).unwrap();
             assert!(!w.snapshot().layers.l7_sandbox);
 
-            // Delete the project config — the merge should fall back to
-            // defaults (l7_sandbox = true).
             let path = dir.path().join(".crux").join("config.toml");
             std::thread::sleep(Duration::from_millis(1100));
             fs::remove_file(&path).unwrap();
@@ -389,12 +293,10 @@ mod tests {
     fn project_only_change_triggers_reload_even_when_global_untouched() {
         with_crux_home(|_home| {
             let dir = tempfile::tempdir().unwrap();
-            // Start with default global + an explicit project override.
             write_project_config(dir.path(), "[layers]\nl11_digest = false\n");
             let w = ConfigWatcher::open(Some(dir.path().to_path_buf())).unwrap();
             assert!(!w.snapshot().layers.l11_digest);
 
-            // Flip the project override.
             touch_forward(&dir.path().join(".crux").join("config.toml"));
             std::thread::sleep(Duration::from_millis(1100));
             write_project_config(dir.path(), "[layers]\nl11_digest = true\n");
@@ -411,12 +313,9 @@ mod tests {
             let w = Arc::new(ConfigWatcher::open(Some(dir.path().to_path_buf())).unwrap());
             let handle = w.clone().spawn_polling(Duration::from_millis(100));
 
-            // Edit the config; the polling thread should pick it up
-            // within a few hundred ms.
             std::thread::sleep(Duration::from_millis(1100));
             write_project_config(dir.path(), "[layers]\nl7_sandbox = false\n");
 
-            // Wait up to 3s for the change to propagate.
             let start = std::time::Instant::now();
             while start.elapsed() < Duration::from_secs(3) {
                 if !w.snapshot().layers.l7_sandbox {
@@ -429,9 +328,7 @@ mod tests {
                 "background poll should have flipped l7_sandbox off"
             );
 
-            // Dropping the handle should join the thread cleanly.
             drop(handle);
-            // No assertion; if we got here without hanging, drop worked.
         });
     }
 
@@ -443,7 +340,6 @@ mod tests {
             let w = Arc::new(ConfigWatcher::open(Some(dir.path().to_path_buf())).unwrap());
             let mut handle = w.spawn_polling(Duration::from_millis(50));
             handle.stop();
-            // Calling stop again must be a no-op.
             handle.stop();
         });
     }
@@ -453,23 +349,17 @@ mod tests {
         with_crux_home(|_home| {
             let dir = tempfile::tempdir().unwrap();
             write_project_config(dir.path(), "[layers]\nl7_sandbox = true\n");
-            // Build a Runtime exactly like the CLI does, then derive
-            // a watcher from it without re-parsing the config.
             let runtime = Runtime::open(Some(dir.path().to_path_buf())).unwrap();
             assert!(runtime.config.layers.l7_sandbox);
 
             let w = ConfigWatcher::from_runtime(&runtime);
-            // Initial snapshot must equal the runtime's config.
             assert_eq!(
                 w.snapshot().layers.l7_sandbox,
                 runtime.config.layers.l7_sandbox
             );
             assert_eq!(w.reload_counter().load(Ordering::Relaxed), 0);
-            // First tick: nothing changed on disk, no-op.
             assert!(!w.tick().unwrap());
 
-            // Edit the project config. tick() must pick it up even
-            // though we never called ConfigWatcher::open() directly.
             std::thread::sleep(Duration::from_millis(1100));
             write_project_config(dir.path(), "[layers]\nl7_sandbox = false\n");
             assert!(w.tick().unwrap());

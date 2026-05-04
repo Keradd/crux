@@ -39,6 +39,8 @@ quality decay.
 | Quality / loop drift | **L9** coach | Score, loop detect, CLAUDE.md drift |
 | Inconsistent project setup | **L10** setup | `crux init` scaffold + profile templates |
 | Long-session history bloat | **L11** digest | Deterministic turn-event rollup (per-file reads/edits, bash first-word, search query buckets) + optional L8 mirror |
+| AI-style verbose comments in source files | **L12** hygiene | Deterministic scanner + auto-fix: drops decorative banners, `Goal:` / `Public surface:` blocks, marketing fluff, and compresses long module docs |
+| AI-flavoured prose ("delve", "leverage", "in conclusion, …") | **Humanizer** | Deterministic local rewrite of raw model output into concise, human-sounding text — preserves code, URLs, paths, identifiers |
 
 All eleven layers are independent and opt-in via TOML. Flip any subset
 (`[layer.l3] enabled = false`, etc.) without rebuilding — the binary ships
@@ -208,6 +210,19 @@ crux digest --pending            # only the un-rolled queue
 crux digest --history --limit 5  # last five rollups
 crux compact                     # force-roll pending into a single digest
 
+# L12 — comment hygiene / slop guard (scan + auto-fix)
+crux hygiene comments --check     # exits 1 if any AI-style comment found
+crux hygiene comments --fix       # drops banners, Goal/Public-surface blocks, compresses module docs
+crux build                        # hygiene check + cargo build (clean only)
+
+# Humanizer — rewrite raw AI prose into concise, human-sounding text
+crux humanize --mode concise --input "In conclusion, we leverage the robust pipeline."
+# → We use the pipeline.
+
+crux humanize --mode developer --file output.txt
+cat answer.md | crux humanize --mode github-readme --stats
+crux humanize --mode casual --input "It is great. We are ready." --json
+
 # MCP server (13 tools, stdio JSON-RPC)
 crux mcp
 crux mcp-shrink npx @modelcontextprotocol/server-filesystem /some/path
@@ -234,6 +249,201 @@ the following tools:
 | `crux_search` | L6 | Hybrid BM25 + dense + RRF (line-aware snippets + symbol enrichment) |
 | `crux_execute` | L7 | Run python / bash / node snippets in the sandbox |
 | `crux_digest` / `crux_compact` | L11 | Render / force-roll conversation turn digests |
+
+---
+
+## Humanizer
+
+`crux humanize` rewrites raw AI-flavoured prose into concise,
+human-sounding text. The rewrite is **deterministic and local** — no
+LLM round-trip, no network — so the same input always yields the
+same output and CI / golden tests can pin behaviour exactly.
+
+### What it changes
+
+- Drops AI-tell openers and closers: `In conclusion, …`, `It is
+  important to note that …`, `As an AI language model, …`,
+  `I hope this helps!`, `Let's dive in!`.
+- Strips sycophantic openers: `Certainly!`, `Sure!`, `Great
+  question!`, `You're absolutely right!`.
+- Collapses wordy phrases: `in order to` → `to`, `due to the
+  fact that` → `because`, `at this point in time` → `now`,
+  `the majority of` → `most`.
+- Replaces fluffy verbs: `utilize` → `use`, `leverage` → `use`,
+  `facilitate` → `help`, `commence` → `start`, `delve` → `dig`,
+  `endeavor` → `try`.
+- Removes marketing adjectives in every mode except `professional`:
+  `robust`, `comprehensive`, `seamless`, `cutting-edge`,
+  `state-of-the-art`, `groundbreaking`, …
+- Collapses adjacent repeated words (`very very` → `very`).
+- Tidies whitespace and excessive blank lines.
+
+### What it never touches
+
+- Fenced code blocks (```` ```lang ... ``` ````) and inline code
+  spans (`` `foo` ``).
+- URLs (`http://`, `https://`, `www.example.com`).
+- Filesystem paths (`/foo/bar`, `./foo`, `C:\foo`).
+- Hex / IPv4 / IPv6-like literals (`0xdeadbeef`, `127.0.0.1`,
+  `fe80::1`).
+- Identifier-shaped tokens that look like function calls or
+  package names (`foo::bar::baz`, `foo(args)`, `@scope/pkg`).
+- `SCREAMING_SNAKE_CASE` constants.
+
+### Modes
+
+| Mode | What it tunes |
+|---|---|
+| `concise` | Aggressive trim. Strips every buzzword + fluff adjective. Default. |
+| `casual` | Concise + contractions (`it is` → `it's`, `do not` → `don't`). |
+| `professional` | Strips buzzwords but keeps formal connectors and adjectives. |
+| `developer` | Terse and technical. No pleasantries, no fluff, no contractions. |
+| `social` | Short sentences + contractions. Good for Twitter / Mastodon. |
+| `github-readme` | README-friendly: keeps blank lines and headings, strips filler. |
+
+### Examples
+
+```bash
+# Inline rewrite
+crux humanize --mode concise --input "In conclusion, we leverage \
+    the robust pipeline to utilize crux::config::Config and run \
+    \`cargo build\` at https://example.com. I hope this helps!"
+# → We use the pipeline to use crux::config::Config and run
+#   `cargo build` at https://example.com.
+
+# Whole-file rewrite
+crux humanize --mode developer --file output.md > clean.md
+
+# Pipe stdin
+cat answer.txt | crux humanize --mode social
+
+# JSON output (text + before/after stats)
+crux humanize --mode casual --input "It is great." --json
+# {
+#   "mode": "casual",
+#   "text": "It's great.",
+#   "stats": { "original_chars": 12, "rewritten_chars": 11, ... }
+# }
+
+# Stderr stats footer (does not pollute stdout for piping)
+crux humanize --mode concise --file output.md --stats
+```
+
+The rule tables live in
+`crates/crux-humanizer/src/rules.rs` — adding a new strike phrase
+or word substitution is a one-line change with a co-located test.
+
+---
+
+## Comment Hygiene / Slop Guard
+
+`crux hygiene comments` is a deterministic scanner that flags
+AI-style verbose comments — decorative banners, long `//!` module
+docs, `Goal:` / `Public surface:` blocks, `Pattern adapted from …`
+references, `Layer N` labels, and marketing fluff (`revolutionary`,
+`cutting-edge`, `seamlessly`, `robust and scalable`, …). The
+companion `--fix` mode rewrites the offending lines in place
+without ever touching code.
+
+Like every other CRUX layer, the rewrite is **local and
+deterministic** — no LLM, no network. Same input always produces
+the same output, so it is safe to run from CI hooks.
+
+### Manual usage
+
+```bash
+crux hygiene comments --check          # scan; exit 1 on any violation
+crux hygiene comments --fix            # apply auto-fix in place
+crux hygiene comments --check --json   # machine-readable report
+crux hygiene comments --check --path src/lib.rs --path src/main.rs
+                                       # scan only the given files
+```
+
+The check tool walks the project root (`--root` overrides), reads
+Rust / TOML / Markdown / YAML / JS / TS / Python files, and skips
+generated artefacts (`@generated` / "do not edit" headers,
+`target/`, `.git/`, `node_modules/`, `Cargo.lock`,
+`package-lock.json`, …).
+
+### Build usage
+
+```bash
+crux build                             # hygiene check + `cargo build` if clean
+crux build --skip-hygiene -- --release # escape hatch + extra cargo args
+```
+
+`crux build` is a thin wrapper: it runs the same scan, aborts the
+build on any violation, then hands off to `cargo build` with any
+arguments after `--`. Use `--skip-hygiene` when you need a build
+without running the guard (CI escape hatch).
+
+### Agent hook usage
+
+Agents that support hooks (currently **Claude Code**) can run the
+hygiene check automatically after every Edit / Write / MultiEdit.
+The hook is **opt-in** and **warn-only** — it never auto-rewrites
+files.
+
+```bash
+# Register the hook alongside the regular CRUX setup.
+crux setup claude-code --enable-hygiene-hook
+
+# Remove it later.
+crux setup claude-code --disable-hygiene-hook
+```
+
+This writes (or drops) a `PostToolUse` entry in
+`~/.claude/settings.json` that runs:
+
+```
+crux hygiene comments --check --changed-from-stdin
+```
+
+The `--changed-from-stdin` flag makes the CLI read the Claude Code
+PostToolUse JSON on stdin and scan **only the file that was just
+edited**, instead of walking the whole repo. Tools other than Edit
+/ Write / MultiEdit / NotebookEdit are ignored (exit 0).
+
+Behaviour:
+
+- Exit 2 + violation report on stderr → Claude Code surfaces the
+  warning to the model so the agent sees it and can decide to
+  clean up before moving on. (Manual / CI invocations still exit 1
+  on violation and print to stdout, matching the existing
+  `crux hygiene comments --check` and `crux build` contract.)
+- Exit 0 on clean files, unsupported tools, or empty payloads — so
+  a missing file path never blocks a tool call.
+- **No auto-fix.** Run `crux hygiene comments --fix` manually if
+  you want the deterministic rewrite.
+
+Pass `--dry-run` to `crux setup` first if you want to preview the
+`settings.json` diff without writing anything. Agents that do not
+support hooks (Cursor, Windsurf, Cline, Zed, Claude Desktop,
+OpenClaw, Hermes) silently ignore the two flags.
+
+### What `--fix` does
+
+- Drops decorative banner comments (`// ────────`, `# ====…`).
+- Removes `Goal:` and `Public surface:` doc-comment blocks
+  (header line + the bullet/blank lines that follow it).
+- Compresses long Rust module-doc runs to a single short sentence
+  (the first non-empty `//!` line in the run is kept).
+- **Never** modifies code lines, fenced code blocks in markdown,
+  `// SAFETY:` / `// SECURITY:` / `// WARNING:` / `// TODO:`
+  comments, or any markdown source file.
+
+### What it does *not* fix
+
+`marketing-phrase`, `pattern-adapted-from`, and `layer-label`
+violations are reported but never auto-rewritten — those need
+human judgement to keep the surrounding sentence meaningful. Run
+`crux humanize --mode developer` on the file if you want a
+deterministic prose rewrite as well.
+
+The rule tables live in
+`crates/crux-l12-hygiene/src/rules.rs` — adding a new banner
+character or marketing phrase is a one-line change with a
+co-located test.
 
 ---
 
@@ -270,6 +480,8 @@ crux/
 │   ├── crux-l9-coach/         # quality score + loop detect + drift
 │   ├── crux-l10-setup/        # `crux init` + profile templates
 │   ├── crux-l11-digest/       # turn-event rollup + deterministic renderer
+│   ├── crux-l12-hygiene/      # comment hygiene / slop guard (scan + fix)
+│   ├── crux-humanizer/        # local rewrite of AI prose → human-sounding text
 │   ├── crux-mcp/              # MCP stdio JSON-RPC server + L2 shrinker
 │   └── crux-cli/              # `crux` binary (clap-based CLI)
 ├── docs/

@@ -1,18 +1,3 @@
-//! CRUX Layer 4 — file read cache.
-//!
-//! Goal: stop the agent from re-reading the same file content over and over.
-//!
-//! Mechanism:
-//! 1. Cache `(agent, session, project, path, offset, limit)` tuples plus
-//!    the file mtime when first seen.
-//! 2. On a repeat read with unchanged mtime + range, return a structural
-//!    digest instead of the full content.
-//! 3. On a repeat read with changed mtime, optionally serve a
-//!    line-level [`delta::compute_delta`] of just the new vs old content
-//!    so the agent gets the change description, not the whole file.
-//! 4. `.contextignore` patterns short-circuit before any caching with a
-//!    [`CacheDecision::Blocked`].
-
 pub mod contextignore;
 pub mod delta;
 pub mod pin;
@@ -29,26 +14,21 @@ pub use contextignore::ContextIgnore;
 pub use delta::{compute_delta, DeltaResult};
 pub use pin::{PinReport, PrefetchReport};
 
-// ─────────────────────────────────────────────────────────────────────────
-// Public types
-// ─────────────────────────────────────────────────────────────────────────
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum CacheDecision {
-    /// First read, or different mtime/range — let the agent read normally.
     Allow,
-    /// Same mtime + same range → file already in context. Return digest.
-    Redundant { digest: String, read_count: i64 },
-    /// File changed since last read; serve diff instead of full body.
-    /// Agent can still force a full read by retrying with a different
-    /// `offset`/`limit`.
+    Redundant {
+        digest: String,
+        read_count: i64,
+    },
     Delta {
         summary: String,
         body: String,
         read_count: i64,
     },
-    /// File matched a `.contextignore` pattern. Hard block.
-    Blocked { reason: String },
+    Blocked {
+        reason: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -61,23 +41,11 @@ pub struct ReadEvent<'a> {
     pub limit: u64,
 }
 
-/// Per-call options that the hook layer may set independently of the
-/// cached state — primarily whether `.contextignore` is consulted.
 #[derive(Debug, Clone, Default)]
 pub struct CheckOptions {
-    /// When `Some`, the manager evaluates `.contextignore` against this
-    /// pre-loaded engine. When `None`, the contextignore step is skipped
-    /// (useful for tests and for warm-loops where the caller already
-    /// rejected the file).
     pub contextignore: Option<ContextIgnore>,
-    /// Per-entry size budget for delta caching. `None` disables delta
-    /// serving (Phase-1 behavior — Allow on changed mtime).
     pub delta_max_bytes: Option<u64>,
 }
-
-// ─────────────────────────────────────────────────────────────────────────
-// Manager
-// ─────────────────────────────────────────────────────────────────────────
 
 pub struct ReadCacheManager<'c> {
     conn: &'c Connection,
@@ -88,25 +56,17 @@ impl<'c> ReadCacheManager<'c> {
         Self { conn }
     }
 
-    /// Direct access to the underlying connection. Used by sibling
-    /// modules (`pin`) that need to issue their own statements without
-    /// duplicating the storage layer.
     pub(crate) fn conn(&self) -> &Connection {
         self.conn
     }
 
-    /// Backwards-compatible entry point: contextignore disabled, delta off.
     pub fn check(&self, ev: &ReadEvent<'_>) -> Result<CacheDecision> {
         self.check_with(ev, &CheckOptions::default())
     }
 
-    /// Decide what to do with a read attempt, honoring the per-call
-    /// `opts`. Always updates the cache so follow-up reads can be matched.
     pub fn check_with(&self, ev: &ReadEvent<'_>, opts: &CheckOptions) -> Result<CacheDecision> {
         let abs = absolutize(ev.file_path);
 
-        // Stage 0 — contextignore short-circuit. Runs before any file IO
-        // so secrets-pattern matches don't accidentally read the file.
         if let Some(ci) = &opts.contextignore {
             if !ci.is_empty() && ci.matches(&abs) {
                 let project_root = ev.project_root.to_string_lossy().to_string();
@@ -138,8 +98,6 @@ impl<'c> ReadCacheManager<'c> {
         let mtime = match mtime_of(&abs) {
             Ok(t) => t,
             Err(_) => {
-                // File missing or unreadable — let the agent's read tool
-                // surface the real error rather than masking it.
                 return Ok(CacheDecision::Allow);
             }
         };
@@ -160,7 +118,6 @@ impl<'c> ReadCacheManager<'c> {
 
         match row {
             Some(existing) if mtimes_equal(existing.mtime_epoch, mtime) => {
-                // Hit. Bump read_count + last_access, optionally compute digest.
                 let digest = self.ensure_digest(existing.id, &abs, existing.digest.as_deref())?;
                 self.bump_access(existing.id, now_epoch)?;
 
@@ -185,12 +142,6 @@ impl<'c> ReadCacheManager<'c> {
                 Ok(CacheDecision::Redundant { digest, read_count })
             }
             Some(existing) => {
-                // mtime changed since last read.
-                //
-                // Delta path: when the caller enabled it AND we still have
-                // the previous body cached AND both old/new fit within the
-                // budget, serve a line diff instead of letting the full
-                // file back into context.
                 let read_count = existing.read_count + 1;
                 let is_full_read = ev.offset == 0 && ev.limit == 0;
                 let delta = if is_full_read {
@@ -199,7 +150,6 @@ impl<'c> ReadCacheManager<'c> {
                     None
                 };
 
-                // Refresh the row regardless: new mtime + maybe new body.
                 let new_body = if is_full_read {
                     body_to_cache(&abs, opts.delta_max_bytes)
                 } else {
@@ -240,7 +190,6 @@ impl<'c> ReadCacheManager<'c> {
                 Ok(CacheDecision::Allow)
             }
             None => {
-                // First read — record entry (with body if budget allows).
                 let tokens_est = estimate_file_tokens(&abs);
                 let body = body_to_cache(&abs, opts.delta_max_bytes);
                 self.insert(
@@ -260,9 +209,6 @@ impl<'c> ReadCacheManager<'c> {
         }
     }
 
-    /// Pull the previously cached body and diff it against the current
-    /// disk content. Returns `None` if delta isn't enabled, the cache is
-    /// missing the previous body, or either side blows the budget.
     fn try_delta(
         &self,
         existing: &CacheRow,
@@ -292,15 +238,11 @@ impl<'c> ReadCacheManager<'c> {
         };
         let d = compute_delta(&old, &new);
         if d.fallback {
-            // Fallback intentionally returns Some so telemetry still
-            // reflects "we tried delta but had to bail" rather than
-            // silently degrading to Allow.
             return Ok(Some(d));
         }
         Ok(Some(d))
     }
 
-    /// Drop the cache entry for a file after an Edit/Write/MultiEdit.
     pub fn invalidate(
         &self,
         agent_id: &str,
@@ -318,15 +260,12 @@ impl<'c> ReadCacheManager<'c> {
         Ok(())
     }
 
-    /// Total entries (for diagnostics).
     pub fn count(&self) -> Result<i64> {
         let n: i64 = self
             .conn
             .query_row("SELECT COUNT(*) FROM read_cache", [], |r| r.get(0))?;
         Ok(n)
     }
-
-    // ── internal ────────────────────────────────────────────────────────
 
     fn lookup(
         &self,
@@ -468,10 +407,6 @@ impl<'c> ReadCacheManager<'c> {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────────────────────────────────
-
 #[derive(Debug)]
 struct CacheRow {
     id: i64,
@@ -507,9 +442,6 @@ fn mtime_of(p: &Path) -> Result<f64> {
     Ok(m.as_secs_f64())
 }
 
-/// `f64` mtimes can drift on filesystems with sub-second precision differing
-/// across stat() calls (HFS+, FAT). 1 ms tolerance is conservative and what
-/// alex used in the reference impl.
 fn mtimes_equal(a: f64, b: f64) -> bool {
     (a - b).abs() < 1e-3
 }
@@ -520,10 +452,6 @@ fn estimate_file_tokens(p: &Path) -> i64 {
         .unwrap_or(0)
 }
 
-/// Return the file body as bytes when delta caching is enabled and the
-/// file fits the budget. `None` means "skip caching"; callers are
-/// expected to overwrite any prior body with NULL in that case so a
-/// stale-body false positive is impossible.
 fn body_to_cache(p: &Path, max_bytes: Option<u64>) -> Option<Vec<u8>> {
     let budget = max_bytes?;
     let stat = std::fs::metadata(p).ok()?;
@@ -532,15 +460,6 @@ fn body_to_cache(p: &Path, max_bytes: Option<u64>) -> Option<Vec<u8>> {
     }
     std::fs::read(p).ok()
 }
-
-// ─────────────────────────────────────────────────────────────────────────
-// Structural digest — Phase 1 minimal impl.
-//
-// For Python we surface class/def/import lines (alex pattern). For
-// JS/TS we surface exports + class/interface/function. Everything else
-// falls back to first-3 + last-3 + line count, which is good enough to let
-// the agent decide if it needs to re-read.
-// ─────────────────────────────────────────────────────────────────────────
 
 pub fn structural_digest(path: &Path, content: &str) -> String {
     let ext = path
@@ -666,18 +585,12 @@ fn digest_fallback(content: &str) -> String {
     format!("{} lines\nfirst 3:\n{}\nlast 3:\n{}", n, head, tail)
 }
 
-/// Hash content for entries we want to dedup later (not yet wired, but the
-/// helper is here so Phase 4 can adopt it without changing callers).
 pub fn content_hash(content: &str) -> String {
     let mut h = Sha256::new();
     h.update(content.as_bytes());
     let bytes = h.finalize();
     hex::encode(&bytes[..16])
 }
-
-// ─────────────────────────────────────────────────────────────────────────
-// Tests
-// ─────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -737,8 +650,6 @@ mod tests {
         };
         let _ = mgr.check(&ev).unwrap();
 
-        // Force a different mtime by writing again; on fast filesystems we
-        // also bump a stat field by setting an explicit mtime.
         std::thread::sleep(std::time::Duration::from_millis(1100));
         std::fs::write(&p, "v2-new").unwrap();
 

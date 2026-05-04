@@ -1,5 +1,3 @@
-//! `GraphStore` — SQLite-backed persistence + query API for the AST graph.
-
 use rusqlite::{params, Connection};
 
 use crux_core::error::Result;
@@ -18,7 +16,6 @@ impl<'c> GraphStore<'c> {
         Self { conn }
     }
 
-    /// Drop everything for a single file (so re-indexing is idempotent).
     pub fn purge_file(&self, project_root: &str, file_path: &str) -> Result<()> {
         self.conn.execute(
             "DELETE FROM ast_nodes WHERE project_root = ? AND file_path = ?",
@@ -31,8 +28,6 @@ impl<'c> GraphStore<'c> {
         Ok(())
     }
 
-    /// Drop every AST row for `project_root`. Used by `crux index
-    /// --force` so the subsequent walk rebuilds from scratch.
     pub fn purge_project(&self, project_root: &str) -> Result<()> {
         self.conn.execute(
             "DELETE FROM ast_nodes WHERE project_root = ?",
@@ -45,8 +40,6 @@ impl<'c> GraphStore<'c> {
         Ok(())
     }
 
-    /// Persist a parse result. Caller is expected to call `purge_file`
-    /// first when re-indexing a file.
     pub fn write(
         &self,
         project_root: &str,
@@ -142,12 +135,6 @@ impl<'c> GraphStore<'c> {
         Ok(())
     }
 
-    // ─────────────────────────────────────────────────────────────────
-    // Queries
-    // ─────────────────────────────────────────────────────────────────
-
-    /// Find symbols by exact `name` match. Use `find_symbol_like` for
-    /// substring matching.
     pub fn find_symbol(
         &self,
         project_root: &str,
@@ -203,14 +190,6 @@ impl<'c> GraphStore<'c> {
         Ok(rows)
     }
 
-    /// Return every node anchored at `file_path` ordered by
-    /// `line_start`. Used by the L4+L5 outline-first auto-mode in
-    /// `crux_read`: when a full-file read is requested for a file
-    /// larger than `[layer.l4] outline_above_lines`, the dispatcher
-    /// pulls the symbol list here and returns it instead of the body.
-    /// `limit` caps the number of rows returned (the outline format
-    /// already truncates display, but we cap at the source so the
-    /// SQLite query stays cheap on huge generated files).
     pub fn list_symbols_in_file(
         &self,
         project_root: &str,
@@ -230,9 +209,6 @@ impl<'c> GraphStore<'c> {
         Ok(rows)
     }
 
-    /// Cheap `COUNT(*)` helper — pairs with [`Self::list_symbols_in_file`]
-    /// when the caller capped `limit` and needs to know the true total
-    /// (e.g. the outline header reports "250 symbols, showing 200").
     pub fn count_symbols_in_file(&self, project_root: &str, file_path: &str) -> Result<u64> {
         let n: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM ast_nodes
@@ -275,15 +251,7 @@ impl<'c> GraphStore<'c> {
     ) -> Result<Vec<GraphNode>> {
         let join_field = if incoming { "source_qn" } else { "target_qn" };
         let filter_field = if incoming { "target_qn" } else { "source_qn" };
-        // Calls edges store `target_qn` as the bare callee text emitted by
-        // tree-sitter (e.g. `compute_delta`), since cross-module resolution
-        // is not performed during extraction. To recover useful caller
-        // results when the user passes a fully-qualified name, also match
-        // on the leaf segment of `qn`.
         let leaf = qn.rsplit("::").next().unwrap_or(qn);
-        // The join also accepts a bare-name match against `n.name` so the
-        // returned `GraphNode` row resolves even when the edge stores only
-        // the leaf identifier.
         let sql = format!(
             "SELECT n.id, n.project_root, n.kind, n.name, n.qualified_name, n.file_path,
                     n.line_start, n.line_end, n.language, n.parent_qn, n.signature, n.is_test
@@ -304,8 +272,6 @@ impl<'c> GraphStore<'c> {
         Ok(rows)
     }
 
-    /// Conservative blast-radius BFS. Visits up to `max_nodes` callers
-    /// up to `max_depth` hops away. Returns nodes other than the seed.
     pub fn impact_radius(
         &self,
         project_root: &str,
@@ -341,22 +307,7 @@ impl<'c> GraphStore<'c> {
         Ok(out)
     }
 
-    /// Project-wide symbol resolution pass for `CALLS` edges.
-    ///
-    /// For every edge whose `target_qn` is not already a known FQN in the
-    /// project, the last segment (split on `::` or `.`) is looked up
-    /// against the symbol table. When exactly one symbol matches, the
-    /// edge is rewritten to that symbol's fully-qualified name; if the
-    /// edge was `INFERRED`, it is upgraded to `RESOLVED`. Ambiguous
-    /// matches are left alone so the leaf-name fallback in
-    /// `Self::related` can still surface them.
-    ///
-    /// Returns the number of edges rewritten.
     pub fn resolve_cross_file_calls(&self, project_root: &str) -> Result<u64> {
-        // Candidates: every CALLS edge whose `target_qn` is not already a
-        // known project FQN. That catches both bare leafs (`compute_delta`)
-        // and partially-qualified paths (`delta::compute_delta`) produced
-        // by file-local resolution of imports.
         let candidates: Vec<(i64, String, f64, String, String)> = {
             let mut stmt = self.conn.prepare(
                 "SELECT e.id, e.target_qn, e.confidence, e.confidence_tier, e.file_path
@@ -396,9 +347,6 @@ impl<'c> GraphStore<'c> {
              WHERE project_root = ? AND kind = 'EXPORTS_DEFAULT' AND source_qn = ?
              LIMIT 2",
         )?;
-        // L5.13h: exact-FQN lookup for named-import path-mapping. Given
-        // a candidate FQN like `src/x::foo`, confirm it refers to a real
-        // callable / type / constant node in the project graph.
         let mut fqn_lookup = self.conn.prepare(
             "SELECT qualified_name FROM ast_nodes
              WHERE project_root = ? AND qualified_name = ?
@@ -411,21 +359,9 @@ impl<'c> GraphStore<'c> {
              WHERE id = ?",
         )?;
 
-        // L5.13g: load tsconfig.json (or jsconfig.json) once per
-        // resolution pass so non-relative module specs (`@/foo`,
-        // `~components/Button`, …) can be mapped to project-relative
-        // module paths via `compilerOptions.paths` / `baseUrl`. Best
-        // effort: missing/unparseable configs leave `js_resolver = None`
-        // and the rest of the pipeline behaves as before.
         let js_resolver = JsModuleResolver::load(std::path::Path::new(project_root));
 
         for (id, target, conf, tier, file_path) in candidates {
-            // L5.13e + L5.13g: `import Foo from './x'; Foo()` and
-            // `import Foo from '@/x'; Foo()` both land here as
-            // `target_qn = "<spec>.default"`. Resolve the spec against
-            // the calling file (relative) or the tsconfig path-mapping
-            // (alias / baseUrl), then look up the unique
-            // `EXPORTS_DEFAULT` edge.
             if let Some(modspec) = target.strip_suffix(".default") {
                 let mod_qns =
                     js_resolve_module_candidates(&file_path, modspec, js_resolver.as_ref());
@@ -471,17 +407,6 @@ impl<'c> GraphStore<'c> {
                 }
             }
 
-            // L5.13h: `import { foo } from '@/x'; foo()` and
-            // `import { foo } from './x'; foo()` both land here as
-            // `target_qn = "<modspec>.<leaf>"` after L5.5 file-local
-            // resolution rewrote the bare leaf through the `imports`
-            // map. Resolve the modspec against the calling file
-            // (relative) or tsconfig path-mapping (alias / baseUrl),
-            // then probe `<mod_qn>::<leaf>` + `<mod_qn>/index::<leaf>`
-            // as a real FQN in the project graph. Skip `.default`
-            // (handled above) and anything that doesn't look like a
-            // JS/TS module spec (so Python `x.y.foo` and Rust
-            // `client.send` leaf-fallback paths stay untouched).
             if let Some((modspec, leaf_name)) = split_js_modspec_leaf(&target) {
                 let mod_qns =
                     js_resolve_module_candidates(&file_path, modspec, js_resolver.as_ref());
@@ -560,8 +485,6 @@ impl<'c> GraphStore<'c> {
     }
 }
 
-/// Return the last segment of a (possibly) qualified name. Splits on
-/// whichever of `::` or `.` appears last. Empty string ⇒ empty result.
 fn leaf_segment(qn: &str) -> &str {
     let a = qn.rfind("::").map(|i| i + 2);
     let b = qn.rfind('.').map(|i| i + 1);
@@ -574,16 +497,6 @@ fn leaf_segment(qn: &str) -> &str {
     &qn[idx..]
 }
 
-/// L5.13e + L5.13g: collect every candidate module path a JS/TS
-/// import specifier could resolve to, in priority order.
-///
-/// Relative specifiers (`./x`, `../foo`) resolve against the
-/// importer's file path and produce a single-element vec. Non-relative
-/// specifiers run through the optional [`JsModuleResolver`] which
-/// consults `tsconfig.json` `compilerOptions.paths` / `baseUrl` and
-/// can produce zero or more project-relative module paths. When no
-/// resolver is loaded, npm-style specifiers stay unresolved (the
-/// project graph has no edge into `node_modules`).
 fn js_resolve_module_candidates(
     importer_file: &str,
     spec: &str,
@@ -598,11 +511,6 @@ fn js_resolve_module_candidates(
     Vec::new()
 }
 
-/// L5.13e: resolve a relative JS/TS module specifier (`./x`, `../foo/x`)
-/// against the importer's file path, returning the project-relative
-/// module path with any leading `./` collapsed and known extensions
-/// stripped. Non-relative specifiers (`react`, `@scope/pkg`) return
-/// `None` because the project graph has no edge into npm packages.
 fn js_resolve_relative_module(importer_file: &str, spec: &str) -> Option<String> {
     if !(spec.starts_with("./") || spec.starts_with("../")) {
         return None;
@@ -614,7 +522,6 @@ fn js_resolve_relative_module(importer_file: &str, spec: &str) -> Option<String>
     let joined = parent.join(spec);
     let normalized = normalize_path_components(&joined);
     let mut s = normalized.to_string_lossy().replace('\\', "/");
-    // Strip a known JS/TS extension if the spec carried one explicitly.
     if let Some(idx) = s.rfind('.') {
         if matches!(&s[idx..], ".ts" | ".tsx" | ".js" | ".jsx" | ".mjs" | ".cjs") {
             s.truncate(idx);
@@ -627,28 +534,12 @@ fn js_resolve_relative_module(importer_file: &str, spec: &str) -> Option<String>
     }
 }
 
-/// Candidate module QNs to probe for a resolved relative path. Tries
-/// the path itself first, then the `<path>/index` form so
-/// `./folder` (resolving to `crates/foo/folder`) also matches a file
-/// laid out as `crates/foo/folder/index.ts`.
 fn js_module_qn_candidates(mod_qn: &str) -> Vec<String> {
     let mut out = vec![mod_qn.to_string()];
     out.push(format!("{mod_qn}/index"));
     out
 }
 
-/// L5.13h: split a post-file-local-resolve `CALLS` target into a
-/// `(modspec, leaf)` pair when it looks like a JS/TS named-import
-/// path-mapping hit. Returns `None` for anything that looks like a
-/// Rust qualified path (`::`), a Python dotted module (`a.b.foo`),
-/// a bare method receiver (`client.send`), or a default-import
-/// sentinel (handled by the caller's `.default` arm).
-///
-/// The modspec gate matches genuine JS/TS module specifiers only:
-/// relative (`./`, `../`), alias-prefixed (`@`, `~`), or
-/// package-path-like (contains `/`). Everything else is rejected so
-/// non-JS languages and dotted receivers fall through to the
-/// leaf-name fallback unchanged.
 fn split_js_modspec_leaf(target: &str) -> Option<(&str, &str)> {
     if target.contains("::") {
         return None;
@@ -719,9 +610,6 @@ mod tests {
     fn write_calls_fixture(conn: &Connection) {
         let store = GraphStore::new(conn);
         let project_root = "/tmp/proj";
-        // Caller `main` lives in module `app::main_mod`; callee `compute_delta`
-        // lives in module `lib::delta`. The Calls edge stores only the bare
-        // leaf because cross-module resolution is not performed.
         let result = ParseResult {
             nodes: vec![
                 ParsedNode {
@@ -764,8 +652,6 @@ mod tests {
         let conn = crux_core::db::open_in_memory().unwrap();
         write_calls_fixture(&conn);
         let store = GraphStore::new(&conn);
-        // Pass the FULLY-QUALIFIED name of the callee. The edge only stored
-        // the leaf, so without the fallback this returns 0 rows.
         let callers = store
             .callers_of("/tmp/proj", "lib::delta::compute_delta")
             .unwrap();
@@ -794,7 +680,6 @@ mod tests {
         write_calls_fixture(&conn);
         let store = GraphStore::new(&conn);
 
-        // Before: edge stores bare `compute_delta`, tier INFERRED.
         let (target, tier): (String, String) = conn
             .query_row(
                 "SELECT target_qn, confidence_tier FROM ast_edges WHERE kind='CALLS'",
@@ -821,9 +706,6 @@ mod tests {
 
     #[test]
     fn resolve_cross_file_calls_upgrades_partial_path() {
-        // Edge target `delta::compute_delta` is partially qualified (the
-        // file-local resolver produced it from a use import). Cross-file
-        // resolution should promote it to the full FQN.
         let conn = crux_core::db::open_in_memory().unwrap();
         let store = GraphStore::new(&conn);
         let project_root = "/tmp/partial";
@@ -879,7 +761,6 @@ mod tests {
         let conn = crux_core::db::open_in_memory().unwrap();
         let store = GraphStore::new(&conn);
         let project_root = "/tmp/ambig";
-        // Two defs share the bare name `helper`.
         let result = ParseResult {
             nodes: vec![
                 ParsedNode {
@@ -939,10 +820,7 @@ mod tests {
         assert_eq!(tier, "INFERRED");
     }
 
-    // ─── L5.13e: default-export aliasing ─────────────────────────────────
-
     fn write_default_export_fixture(conn: &Connection, project_root: &str) {
-        // `src/x.ts`: exports `bar` as the default.
         let store = GraphStore::new(conn);
         let exporter = ParseResult {
             nodes: vec![ParsedNode {
@@ -968,7 +846,6 @@ mod tests {
             .write(project_root, "src/x.ts", "typescript", "h", &exporter)
             .unwrap();
 
-        // `src/y.ts`: imports the default and calls it.
         let importer = ParseResult {
             nodes: vec![ParsedNode {
                 kind: NodeKind::Function,
@@ -982,8 +859,6 @@ mod tests {
             }],
             edges: vec![ParsedEdge {
                 kind: EdgeKind::Calls,
-                // Mimics what the file-local resolver leaves behind
-                // after `import Foo from './x'; Foo();`.
                 source_qn: "src/y::main".to_string(),
                 target_qn: "./x.default".to_string(),
                 line: 2,
@@ -1018,10 +893,6 @@ mod tests {
 
     #[test]
     fn resolve_cross_file_calls_default_import_via_index_file() {
-        // `src/folder/index.ts` exports `helper` as default; `src/y.ts`
-        // does `import H from './folder'`. The relative spec resolves
-        // to `src/folder` which doesn't exist as a module, so the
-        // resolver must fall back to `src/folder/index`.
         let conn = crux_core::db::open_in_memory().unwrap();
         let project_root = "/tmp/default-index";
         let store = GraphStore::new(&conn);
@@ -1094,7 +965,6 @@ mod tests {
 
     #[test]
     fn resolve_cross_file_calls_skips_default_import_for_unknown_module() {
-        // No exporter file → the `./missing.default` target stays put.
         let conn = crux_core::db::open_in_memory().unwrap();
         let project_root = "/tmp/default-missing";
         let store = GraphStore::new(&conn);
@@ -1159,8 +1029,6 @@ mod tests {
             "scoped package rejected"
         );
     }
-
-    // ─── L5.13g: tsconfig path-mapping ───────────────────────────────────
 
     fn write_default_export_with_module(
         store: &GraphStore,
@@ -1228,9 +1096,6 @@ mod tests {
 
     #[test]
     fn resolve_cross_file_calls_default_import_via_alias() {
-        // `tsconfig.json` declares `"@/*": ["src/*"]`. An importer doing
-        // `import Foo from '@/x'` should land on `src/x:file`'s default
-        // export the same way `./x` does.
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("tsconfig.json"),
@@ -1264,8 +1129,6 @@ mod tests {
 
     #[test]
     fn resolve_cross_file_calls_default_import_via_baseurl() {
-        // `baseUrl: "src"` with no `paths` — bare `utils/x` resolves to
-        // `src/utils/x:file`.
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("tsconfig.json"),
@@ -1299,10 +1162,6 @@ mod tests {
 
     #[test]
     fn resolve_cross_file_calls_alias_falls_back_to_index_file() {
-        // `@/folder` aliases `src/folder` which itself doesn't have a
-        // module — only `src/folder/index.ts`. The `<path>/index`
-        // candidate must still be probed once the alias has been
-        // applied.
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("tsconfig.json"),
@@ -1341,8 +1200,6 @@ mod tests {
 
     #[test]
     fn resolve_cross_file_calls_alias_priority_picks_first_existing_target() {
-        // Multi-target `paths` — first existing module wins; the
-        // second is only probed when the first yields nothing.
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("tsconfig.json"),
@@ -1358,7 +1215,6 @@ mod tests {
 
         let conn = crux_core::db::open_in_memory().unwrap();
         let store = GraphStore::new(&conn);
-        // Only the fallback module exists.
         write_default_export_with_module(&store, &project_root, "fallback/x", "fallback/x.ts", "f");
         write_default_call_edge(&store, &project_root, "src/y", "src/y.ts", "~/x");
 
@@ -1376,8 +1232,6 @@ mod tests {
 
     #[test]
     fn resolve_cross_file_calls_no_tsconfig_leaves_alias_unresolved() {
-        // Without a tsconfig, `@/x.default` stays untouched — the
-        // pre-L5.13g behaviour.
         let dir = tempfile::tempdir().unwrap();
         let project_root = dir.path().to_string_lossy().to_string();
 
@@ -1400,7 +1254,6 @@ mod tests {
 
     #[test]
     fn js_resolve_module_candidates_prefers_relative_then_alias() {
-        // Relative spec short-circuits the resolver entirely.
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("tsconfig.json"),
@@ -1421,12 +1274,9 @@ mod tests {
         let cands = js_resolve_module_candidates("src/y.ts", "@/x", resolver.as_ref());
         assert_eq!(cands, vec!["src/x".to_string()]);
 
-        // No resolver → npm-style specifiers stay unresolved.
         let cands = js_resolve_module_candidates("src/y.ts", "@/x", None);
         assert!(cands.is_empty());
     }
-
-    // ─── L5.13h: named-import path-mapping ───────────────────────────────
 
     #[test]
     fn split_js_modspec_leaf_accepts_js_shapes() {
@@ -1448,24 +1298,16 @@ mod tests {
 
     #[test]
     fn split_js_modspec_leaf_rejects_non_js_shapes() {
-        // Rust qualified path.
         assert_eq!(split_js_modspec_leaf("foo::bar::baz"), None);
-        // Python dotted module (no slash/alias).
         assert_eq!(split_js_modspec_leaf("x.y.foo"), None);
-        // Rust receiver method-call leftover.
         assert_eq!(split_js_modspec_leaf("client.send"), None);
-        // Default-import sentinel — handled by the `.default` arm.
         assert_eq!(split_js_modspec_leaf("@/x.default"), None);
-        // Empty shapes.
         assert_eq!(split_js_modspec_leaf(""), None);
         assert_eq!(split_js_modspec_leaf(".foo"), None);
         assert_eq!(split_js_modspec_leaf("@/x."), None);
-        // Leaf with no separator.
         assert_eq!(split_js_modspec_leaf("foo"), None);
     }
 
-    /// Write a JS/TS module that exports `symbol` as a named function,
-    /// anchored at `module_qn` / `file_path`.
     fn write_named_export_module(
         store: &GraphStore,
         project_root: &str,
@@ -1491,9 +1333,6 @@ mod tests {
             .unwrap();
     }
 
-    /// Write an importer whose single `CALLS` edge mimics what the
-    /// file-local resolver leaves after `import { <leaf> } from '<spec>'`
-    /// promotes the bare leaf through the `imports` map.
     fn write_named_call_edge(
         store: &GraphStore,
         project_root: &str,
@@ -1529,8 +1368,6 @@ mod tests {
 
     #[test]
     fn resolve_cross_file_calls_named_import_relative() {
-        // `import { bar } from './x'; bar()` resolves to `src/x::bar`
-        // even though the project has no tsconfig.
         let dir = tempfile::tempdir().unwrap();
         let project_root = dir.path().to_string_lossy().to_string();
 
@@ -1554,8 +1391,6 @@ mod tests {
 
     #[test]
     fn resolve_cross_file_calls_named_import_via_tsconfig_alias() {
-        // `import { bar } from '@/x'; bar()` resolves via tsconfig
-        // `paths: { "@/*": ["src/*"] }` to `src/x::bar`.
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("tsconfig.json"),
@@ -1588,8 +1423,6 @@ mod tests {
 
     #[test]
     fn resolve_cross_file_calls_named_import_via_index_file() {
-        // `import { helper } from './folder'` should fall back to
-        // `./folder/index::helper` when no `./folder` module exists.
         let dir = tempfile::tempdir().unwrap();
         let project_root = dir.path().to_string_lossy().to_string();
 
@@ -1625,16 +1458,12 @@ mod tests {
 
     #[test]
     fn resolve_cross_file_calls_named_import_disambiguates_by_modspec() {
-        // Two functions in the project share the bare name `foo`. The
-        // leaf-name fallback would be ambiguous; the modspec arm must
-        // disambiguate by consulting the `./x` spec → `src/x`.
         let dir = tempfile::tempdir().unwrap();
         let project_root = dir.path().to_string_lossy().to_string();
 
         let conn = crux_core::db::open_in_memory().unwrap();
         let store = GraphStore::new(&conn);
         write_named_export_module(&store, &project_root, "src/x", "src/x.ts", "foo");
-        // Ambiguator: a different module also exposes `foo`.
         write_named_export_module(&store, &project_root, "src/other", "src/other.ts", "foo");
         write_named_call_edge(&store, &project_root, "src/y", "src/y.ts", "./x", "foo");
 
@@ -1652,8 +1481,6 @@ mod tests {
 
     #[test]
     fn resolve_cross_file_calls_named_import_skips_when_module_missing() {
-        // No exporter for `./missing.bar` → target stays untouched so
-        // downstream consumers can still see the unresolved leaf.
         let dir = tempfile::tempdir().unwrap();
         let project_root = dir.path().to_string_lossy().to_string();
 
@@ -1682,15 +1509,11 @@ mod tests {
 
     #[test]
     fn resolve_cross_file_calls_named_import_no_tsconfig_leaves_alias_unresolved() {
-        // Without a tsconfig, `@/x.bar` can't be mapped — the edge
-        // falls through to the leaf-name fallback (which picks the
-        // unique `bar` def if one exists; otherwise stays put).
         let dir = tempfile::tempdir().unwrap();
         let project_root = dir.path().to_string_lossy().to_string();
 
         let conn = crux_core::db::open_in_memory().unwrap();
         let store = GraphStore::new(&conn);
-        // Two `bar`s so the leaf-name fallback also gives up.
         write_named_export_module(&store, &project_root, "src/x", "src/x.ts", "bar");
         write_named_export_module(&store, &project_root, "src/other", "src/other.ts", "bar");
         write_named_call_edge(&store, &project_root, "src/y", "src/y.ts", "@/x", "bar");

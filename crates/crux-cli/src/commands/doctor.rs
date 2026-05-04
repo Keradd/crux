@@ -1,5 +1,3 @@
-//! `crux doctor` — diagnose the local installation.
-
 use anyhow::Result;
 
 use crux_core::{config, paths, Runtime};
@@ -35,7 +33,6 @@ pub fn run(cli: &Cli) -> Result<()> {
         println!("project   : (none — run `crux init` to set up)");
     }
 
-    // Try to load config
     match config::load(project_opt.as_deref()) {
         Ok(_) => println!("config    : ok"),
         Err(e) => {
@@ -44,7 +41,6 @@ pub fn run(cli: &Cli) -> Result<()> {
         }
     }
 
-    // Try to open the DB
     let runtime = match Runtime::open(project_opt.clone()) {
         Ok(rt) => {
             let db_path = rt
@@ -63,10 +59,6 @@ pub fn run(cli: &Cli) -> Result<()> {
         }
     };
 
-    // Embedder build vs. configured provider. Agents that flip to
-    // `embedding_provider = "fastembed"` in TOML without rebuilding the
-    // binary get a clear diagnostic here instead of a runtime error on
-    // first search.
     let built_fastembed = cfg!(feature = "fastembed");
     let embedder_label = if built_fastembed {
         "fastembed (full build)"

@@ -18,7 +18,6 @@ fn create_test_file(dir: &Path, name: &str, content: &str) -> std::path::PathBuf
 fn bench_compute_delta(c: &mut Criterion) {
     let mut group = c.benchmark_group("l4_delta");
 
-    // Small file (100 lines)
     let old_small: String = (0..100).map(|i| format!("line {}\n", i)).collect();
     let mut new_small = old_small.clone();
     new_small.push_str("added line\n");
@@ -28,7 +27,6 @@ fn bench_compute_delta(c: &mut Criterion) {
         |b, (old, new)| b.iter(|| compute_delta(black_box(old), black_box(new))),
     );
 
-    // Medium file (1000 lines)
     let old_medium: String = (0..1000).map(|i| format!("line {}\n", i)).collect();
     let mut new_medium = old_medium.clone();
     new_medium.push_str("added line\n");
@@ -38,7 +36,6 @@ fn bench_compute_delta(c: &mut Criterion) {
         |b, (old, new)| b.iter(|| compute_delta(black_box(old), black_box(new))),
     );
 
-    // Large file (5000 lines)
     let old_large: String = (0..5000).map(|i| format!("line {}\n", i)).collect();
     let mut new_large = old_large.clone();
     new_large.push_str("added line\n");
@@ -69,7 +66,6 @@ fn bench_check_with(c: &mut Criterion) {
         limit: 10000,
     };
 
-    // First read (cache miss)
     group.bench_function("first_read", |b| {
         b.iter(|| {
             manager
@@ -78,7 +74,6 @@ fn bench_check_with(c: &mut Criterion) {
         })
     });
 
-    // Second read (cache hit)
     manager.check_with(&ev, &CheckOptions::default()).unwrap();
     group.bench_function("cached_read", |b| {
         b.iter(|| {

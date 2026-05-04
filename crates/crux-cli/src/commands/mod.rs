@@ -1,6 +1,3 @@
-//! CLI subcommand implementations. One file per top-level command keeps
-//! the surface easy to scan.
-
 pub mod ast;
 pub mod audit;
 pub mod bash;
@@ -10,6 +7,7 @@ pub mod digest;
 pub mod doctor;
 pub mod execute;
 pub mod hook;
+pub mod hygiene;
 pub mod init;
 pub mod mcp;
 pub mod memory;
@@ -21,8 +19,6 @@ pub mod version;
 
 use std::path::{Path, PathBuf};
 
-/// Resolve project root: explicit `--project` > walk up from cwd looking
-/// for `.crux/` > current dir.
 pub fn resolve_project_root(explicit: Option<&Path>) -> PathBuf {
     if let Some(p) = explicit {
         return p.to_path_buf();

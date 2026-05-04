@@ -1,5 +1,3 @@
-//! `crux execute` — Layer 7 sandbox executor.
-
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::PathBuf;
@@ -17,47 +15,30 @@ use crate::Cli;
 
 #[derive(Debug, ClapArgs)]
 pub struct ExecuteArgs {
-    /// Runtime kind: python | bash | node.
     #[arg(long, default_value = "bash")]
     pub runtime: String,
 
-    /// Inline code to run. Mutually exclusive with `--file` and stdin.
     #[arg(long, short = 'c')]
     pub code: Option<String>,
 
-    /// Read code from this file instead of `--code`.
     #[arg(long, short = 'f', value_name = "PATH")]
     pub file: Option<PathBuf>,
 
-    /// Per-execution wall-clock timeout in seconds.
     #[arg(long, default_value_t = 10)]
     pub timeout: u64,
 
-    /// Maximum bytes captured from stdout / stderr each.
     #[arg(long, default_value_t = 65_536)]
     pub max_output_bytes: usize,
 
-    /// Inherit the parent's full environment instead of the scrubbed default.
     #[arg(long)]
     pub inherit_env: bool,
 
-    /// Extra `KEY=VALUE` env entries (repeatable).
     #[arg(long = "env", value_name = "KEY=VALUE")]
     pub env: Vec<String>,
 
-    /// Isolation level: `portable` (default) or `hard`. `hard` layers
-    /// Linux-only `setrlimit` caps and, when the binary was built with
-    /// the `landlock` feature, filesystem confinement on top of the
-    /// portable guarantees. Non-Linux targets fall back to portable.
     #[arg(long, default_value = "portable")]
     pub isolate: String,
 
-    /// Load `~/.claude/settings.json` + `~/.openclaw/openclaw.json`
-    /// (plus their per-project equivalents) and refuse to spawn if the
-    /// runtime + code body matches any unioned `Bash(...)` / `exec`
-    /// deny rule. Off by default to preserve the legacy contract;
-    /// opt in for parity with how Claude Code / OpenClaw enforce
-    /// `permissions.deny` on tool calls.
     #[arg(long = "check-agent-perms")]
     pub check_agent_perms: bool,
 }

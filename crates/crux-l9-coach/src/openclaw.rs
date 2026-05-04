@@ -1,30 +1,3 @@
-//! OpenClaw context auditor.
-//!
-//! Ports the threshold rules from
-//! `_refs/token-optimizer-alex/openclaw/src/context-audit.ts`'s
-//! `generateRecommendations` into a CRUX-native, dependency-light
-//! Rust module.
-//!
-//! The auditor is purely **read-only**: it scans an OpenClaw dir on
-//! disk, estimates per-component token cost, and emits a list of
-//! actionable recommendations. No side effects, no DB writes.
-//!
-//! Design choices that diverge from alex's TS reference:
-//!
-//! 1. **Token estimation** uses CRUX's `tokens::estimate` (chars/4) for
-//!    consistency with every other layer's reporting. Numbers will be
-//!    a few percent off the TS reference (which uses tiktoken).
-//! 2. **MCP server counting** is a basename count of
-//!    `openclaw.json` entries via a tiny ad-hoc JSON parse rather than
-//!    a full schema-aware reader. We only need *count*, not contents.
-//! 3. **Skills** are detected as immediate subdirectories of
-//!    `<openclaw_dir>/skills/` containing a `SKILL.md`. Archived skills
-//!    are subdirs whose name starts with `_` or that contain
-//!    `.archived`.
-//!
-//! Public surface: [`audit`], [`AuditReport`], [`Component`],
-//! [`ContextCategory`].
-
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
@@ -32,68 +5,35 @@ use serde::Serialize;
 use crux_core::error::{CruxError, Result};
 use crux_core::tokens;
 
-// ─────────────────────────────────────────────────────────────────────────
-// Tunables — mirror alex's thresholds, converted to const so a future
-// crux.toml override is a one-line change.
-// ─────────────────────────────────────────────────────────────────────────
-
-/// Hard-coded estimate of the un-editable system prompt overhead.
-/// Matches the TS reference (15k tokens). Surfaced so dashboards can
-/// strip it from "user-controlled" totals.
 pub const CORE_SYSTEM_TOKENS: u32 = 15_000;
 
-/// Threshold above which SOUL.md should be trimmed.
 pub const THRESHOLD_SOUL_TOKENS: u32 = 2_000;
 
-/// Threshold above which MEMORY.md should have entries archived.
 pub const THRESHOLD_MEMORY_TOKENS: u32 = 1_500;
 
-/// Threshold above which TOOLS.md should defer rarely-used tools.
 pub const THRESHOLD_TOOLS_TOKENS: u32 = 5_000;
 
-/// Threshold above which we recommend archiving skills.
 pub const THRESHOLD_ACTIVE_SKILLS: u32 = 20;
 
-/// Threshold above which we recommend disabling MCP servers.
 pub const THRESHOLD_MCP_SERVERS: u32 = 10;
 
-/// Total overhead at which we start nagging about the 200k context budget.
 pub const THRESHOLD_TOTAL_TOKENS: u32 = 30_000;
 
-/// Reference context window used to compute "X% of window" in messages.
-/// 200k matches Claude 3.5 Sonnet / 4 / Opus default; agents wanting a
-/// different reference can ignore the textual percentage and use raw
-/// `total_tokens` from the JSON output.
 pub const CONTEXT_WINDOW_TOKENS: u32 = 200_000;
-
-// ─────────────────────────────────────────────────────────────────────────
-// Public types
-// ─────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ContextCategory {
-    /// The estimated system prompt overhead (always present).
     System,
-    /// Personality / SOUL.md.
     Personality,
-    /// MEMORY.md.
     Memory,
-    /// AGENTS.md.
     Agents,
-    /// TOOLS.md.
     Tools,
-    /// CLAUDE.md (Claude Code memory).
     ClaudeMemory,
-    /// USER.md, IDENTITY.md, HEARTBEAT.md and other named bundle files.
     Identity,
-    /// JSON / YAML / TOML config bundle (`openclaw.json` etc).
     Config,
-    /// Aggregated skills bundle.
     Skills,
-    /// Aggregated MCP server definition bundle.
     McpServers,
-    /// Anything else we recognize but don't need to call out.
     Other,
 }
 
@@ -121,7 +61,6 @@ pub struct Component {
     pub path: String,
     pub tokens: u32,
     pub category: ContextCategory,
-    /// `false` for fixed costs like the core system prompt.
     pub is_optimizable: bool,
 }
 
@@ -129,7 +68,6 @@ pub struct Component {
 pub struct Recommendation {
     pub kind: String,
     pub message: String,
-    /// Action verb to surface in CLI output ("trim", "archive", ...).
     pub action: &'static str,
 }
 
@@ -145,14 +83,6 @@ pub struct AuditReport {
     pub recommendations: Vec<Recommendation>,
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// Entry point
-// ─────────────────────────────────────────────────────────────────────────
-
-/// Scan the OpenClaw directory at `dir`, build the component breakdown,
-/// and return the recommendations the user should act on. Returns a
-/// CRUX error only on filesystem failures unrelated to "missing optional
-/// file" — those are silently treated as zero-token components.
 pub fn audit(dir: &Path) -> Result<AuditReport> {
     if !dir.exists() {
         return Err(CruxError::other(format!(
@@ -176,7 +106,6 @@ pub fn audit(dir: &Path) -> Result<AuditReport> {
         is_optimizable: false,
     });
 
-    // Per-file scans, mirroring alex's `fileScanners` list.
     push_optional(
         &mut components,
         dir,
@@ -213,7 +142,6 @@ pub fn audit(dir: &Path) -> Result<AuditReport> {
         ContextCategory::Config,
     );
 
-    // Aggregate scans — skills and MCP.
     let skills = scan_skills(&dir.join("skills"));
     let mcp = scan_mcp_servers(&dir.join("openclaw.json"));
 
@@ -232,10 +160,6 @@ pub fn audit(dir: &Path) -> Result<AuditReport> {
     }
 
     if mcp_count > 0 {
-        // Each declared MCP server tends to introduce ~200 tokens of
-        // tool descriptions in practice. Use a coarse heuristic: 200 *
-        // count. Agents wanting precision should re-tally from runtime
-        // tool-list output.
         let mcp_tokens = mcp_count.saturating_mul(200);
         components.push(Component {
             name: format!("MCP servers ({} active)", mcp_count),
@@ -246,7 +170,6 @@ pub fn audit(dir: &Path) -> Result<AuditReport> {
         });
     }
 
-    // Sort components: System on top, then by tokens desc.
     components.sort_by(|a, b| {
         if a.category == ContextCategory::System {
             std::cmp::Ordering::Less
@@ -278,10 +201,6 @@ pub fn audit(dir: &Path) -> Result<AuditReport> {
         recommendations,
     })
 }
-
-// ─────────────────────────────────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────────────────────────────────
 
 fn push_optional(out: &mut Vec<Component>, dir: &Path, name: &str, category: ContextCategory) {
     let path = dir.join(name);
@@ -350,10 +269,6 @@ fn scan_mcp_servers(openclaw_json: &Path) -> (usize,) {
     let Ok(text) = std::fs::read_to_string(openclaw_json) else {
         return (0,);
     };
-    // We only need the *count* of declared servers under
-    // `mcp.servers.<name>` (or top-level `mcp_servers.<name>`). A
-    // schema-light count via `serde_json::Value` is enough — we don't
-    // care about content.
     let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
         return (0,);
     };
@@ -468,15 +383,9 @@ fn generate_recommendations(
     recs
 }
 
-// Convenience accessor exposed for CLI formatting — keeps the public
-// surface tiny without leaking the enum's exact label string.
 pub fn category_label(c: ContextCategory) -> &'static str {
     c.label()
 }
-
-// ─────────────────────────────────────────────────────────────────────────
-// Tests
-// ─────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -508,7 +417,6 @@ mod tests {
     #[test]
     fn bloated_soul_md_fires_trim_recommendation() {
         let dir = tempfile::tempdir().unwrap();
-        // 10k chars / 4 ≈ 2500 tokens — comfortably above 2000.
         let body = "x".repeat(10_000);
         std::fs::write(dir.path().join("SOUL.md"), &body).unwrap();
         let r = audit(dir.path()).unwrap();
@@ -522,7 +430,6 @@ mod tests {
     #[test]
     fn bloated_memory_md_fires_archive_recommendation() {
         let dir = tempfile::tempdir().unwrap();
-        // 7k chars / 4 ≈ 1750 — above 1500 threshold.
         std::fs::write(dir.path().join("MEMORY.md"), "y".repeat(7_000)).unwrap();
         let r = audit(dir.path()).unwrap();
         assert!(r
@@ -563,7 +470,6 @@ mod tests {
     #[test]
     fn mcp_count_from_openclaw_json_at_either_path() {
         let dir = tempfile::tempdir().unwrap();
-        // Use `mcp.servers` shape (the canonical OpenClaw layout).
         let body = serde_json::json!({
             "mcp": {
                 "servers": {
@@ -608,7 +514,6 @@ mod tests {
         std::fs::write(dir.path().join("AGENTS.md"), "a".repeat(2_000)).unwrap();
         let r = audit(dir.path()).unwrap();
         assert_eq!(r.components[0].category, ContextCategory::System);
-        // After system, the larger MEMORY.md must precede AGENTS.md.
         let memory_idx = r
             .components
             .iter()

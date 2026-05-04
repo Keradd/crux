@@ -1,5 +1,3 @@
-//! `crux config` — show / locate configuration.
-
 use anyhow::Result;
 use clap::Subcommand;
 
@@ -10,11 +8,8 @@ use crate::Cli;
 
 #[derive(Debug, Subcommand)]
 pub enum Cmd {
-    /// Print the effective merged config (defaults + global + project).
     Show,
-    /// Print the file paths CRUX is looking at.
     Paths,
-    /// Validate that config files parse cleanly.
     Validate,
 }
 
@@ -36,7 +31,6 @@ pub fn run(cli: &Cli, cmd: &Cmd) -> Result<()> {
 fn show(cli: &Cli, project: Option<&std::path::Path>) -> Result<()> {
     let loaded = config::load(project)?;
     if cli.json {
-        // serde_json understands our Config thanks to derive(Serialize).
         println!("{}", serde_json::to_string_pretty(&loaded.config)?);
     } else {
         let s = toml::to_string_pretty(&loaded.config)?;

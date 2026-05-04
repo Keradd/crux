@@ -1,0 +1,14 @@
+[package]
+name = "crux-l12-hygiene"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "CRUX Layer 12: Comment Hygiene / Slop Guard. Deterministic detector and fixer for AI-style verbose comments, decorative banners, and marketing fluff in source files."
+
+[dependencies]
+serde.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

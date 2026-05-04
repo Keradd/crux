@@ -1,10 +1,3 @@
-//! Tool dispatch — translate a `tools/call` request into the underlying
-//! CRUX layer API, then format the result as a [`CallToolResult`].
-//!
-//! Every dispatcher is sync because all current layers are sync. When we
-//! add Layer 5/6 (tree-sitter + embeddings) this module will grow async
-//! variants.
-
 use std::path::PathBuf;
 use std::str::FromStr;
 
@@ -23,10 +16,6 @@ use crux_l8_memory::{
 
 use crate::protocol::CallToolResult;
 
-/// Apply a `tools/call` request. `arguments` is the raw JSON object
-/// supplied by the agent. Errors mapped to `CallToolResult::error` so
-/// the MCP client always receives a structured response (we reserve
-/// JSON-RPC errors for protocol-level failures).
 pub fn call(runtime: &Runtime, name: &str, arguments: &Value) -> CallToolResult {
     let result = match name {
         "crux_remember" => remember(runtime, arguments),
@@ -51,11 +40,6 @@ pub fn call(runtime: &Runtime, name: &str, arguments: &Value) -> CallToolResult 
     }
 }
 
-/// Best-effort L11 turn-event seed for every dispatched tool call. Lets
-/// agents that drive CRUX through MCP only (no PreToolUse/PostToolUse
-/// hooks — Cursor/Windsurf default config) still get conversation
-/// digests. The digest tools themselves are excluded so calling
-/// `crux_digest` doesn't pollute its own pending list.
 fn record_l11_event(runtime: &Runtime, name: &str, args: &Value, result: &Result<String, String>) {
     if !runtime.config.layers.l11_digest {
         return;
@@ -134,8 +118,6 @@ fn derive_l11_target(tool_name: &str, args: &Value) -> Option<String> {
             }
         }
     }
-    // crux_execute carries the source under `code`; we only surface its
-    // first line so multi-kilobyte snippets don't bloat the digest.
     if tool_name == "crux_execute" {
         if let Some(code) = args.get("code").and_then(|v| v.as_str()) {
             return Some(code.lines().next().unwrap_or(code).to_string());
@@ -152,10 +134,6 @@ fn truncate_one_line(s: &str, n: usize) -> String {
         format!("{}\u{2026}", &line[..n])
     }
 }
-
-// ─────────────────────────────────────────────────────────────────────────
-// crux_remember
-// ─────────────────────────────────────────────────────────────────────────
 
 fn remember(runtime: &Runtime, args: &Value) -> Result<String, String> {
     let project = project_root(runtime).ok_or_else(|| {
@@ -222,10 +200,6 @@ fn remember(runtime: &Runtime, args: &Value) -> Result<String, String> {
     Ok(format!("remembered #{id} ({})", kind_s))
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// crux_recall
-// ─────────────────────────────────────────────────────────────────────────
-
 fn recall(runtime: &Runtime, args: &Value) -> Result<String, String> {
     let project = project_root(runtime)
         .ok_or_else(|| "no project context — run `crux init` first".to_string())?;
@@ -285,24 +259,10 @@ fn recall(runtime: &Runtime, args: &Value) -> Result<String, String> {
     Ok(out)
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// crux_read
-// ─────────────────────────────────────────────────────────────────────────
-
 fn read(runtime: &Runtime, args: &Value) -> Result<String, String> {
     let project = project_root_path(runtime)
         .ok_or_else(|| "no project context — run `crux init` first".to_string())?;
 
-    // Resolve the read target. Three shapes accepted:
-    //   1. `symbol = "<qualified_name>"`  — resolve file + line range via
-    //      the L5 graph. Cheapest path for "I want one function".
-    //   2. `file_path + offset + limit`   — line-range slice of a file.
-    //      `offset` = 1-based line to start at (compat: 0 or 1 both mean
-    //      top-of-file for ergonomics), `limit` = number of lines to
-    //      return (0 = to end).
-    //   3. `file_path` alone              — whole file (legacy behavior).
-    //
-    // When `symbol` is set, `file_path` / `offset` / `limit` are ignored.
     let (file_path, offset_lines, limit_lines, symbol_meta) =
         if let Some(qn) = args.get("symbol").and_then(|v| v.as_str()) {
             let project_s = project.display().to_string();
@@ -373,16 +333,9 @@ fn read(runtime: &Runtime, args: &Value) -> Result<String, String> {
 
     let mut body = match decision {
         CacheDecision::Allow => {
-            // Cache miss/fresh — read the file and slice to the requested
-            // range. For full-file reads the slice is a no-op.
             let raw =
                 std::fs::read_to_string(&path_buf).map_err(|e| format!("read failed: {e}"))?;
 
-            // Outline-first auto-mode (L4+L5 fusion). Fires only when the
-            // caller asked for the *whole* file (no offset/limit/symbol)
-            // and didn't pass `force_full = true`. We pull the symbol
-            // list from L5 and return that instead of the body — agent
-            // can drill in via `crux_read --symbol=<qn>` afterwards.
             let outline_threshold = runtime.config.layer.l4.outline_above_lines;
             let want_full_read =
                 offset_lines == 0 && limit_lines == 0 && symbol_meta.is_none() && !force_full;
@@ -443,16 +396,8 @@ fn read(runtime: &Runtime, args: &Value) -> Result<String, String> {
     Ok(body)
 }
 
-/// Hard cap on outline rows. Anything past this is collapsed into a
-/// single "… and N more" hint so generated files (50k-line bundles,
-/// minified vendored code) don't balloon the response.
 const OUTLINE_MAX_ROWS: usize = 200;
 
-/// L4+L5 outline-first auto-mode renderer. Returns `None` when the
-/// L5 graph has no symbols indexed for `file_path`, signalling the
-/// dispatcher to fall back to the full body. The returned string is a
-/// compact symbol list with a sticky header pointing the agent at
-/// `--symbol` / `--offset` / `--force_full` knobs for follow-up reads.
 fn try_render_outline(
     runtime: &Runtime,
     project: &std::path::Path,
@@ -462,9 +407,6 @@ fn try_render_outline(
     let project_s = project.display().to_string();
     let store = GraphStore::new(&runtime.conn);
     let variants = file_path_variants(project, file_path);
-    // Pick the file_path variant the GraphStore actually persisted under.
-    // Real-world callers may pass abs while indexing wrote rel (or
-    // vice-versa) — matching variant wins, others stay empty.
     let mut matched_variant: Option<&str> = None;
     let mut nodes: Vec<GraphNode> = Vec::new();
     for v in &variants {
@@ -529,9 +471,6 @@ fn try_render_outline(
     Some(out)
 }
 
-/// Trim a signature line for outline display: collapse whitespace and
-/// cap at 80 chars with an ellipsis. Keeps the visible row tidy without
-/// hiding the symbol's calling shape.
 fn truncate_signature(sig: &str) -> String {
     let collapsed: String = sig.split_whitespace().collect::<Vec<_>>().join(" ");
     if collapsed.len() <= 80 {
@@ -541,11 +480,6 @@ fn truncate_signature(sig: &str) -> String {
     }
 }
 
-/// Slice `raw` to a 1-based line range. `offset == 0` means top-of-file
-/// (1 is treated identically so 0/1 ergonomics both work). `limit == 0`
-/// means to end-of-file. When `annotate_lines` is true the slice is
-/// prefixed with 1-based gutter line numbers — matching
-/// `get_symbol_source`'s style so agents can jump back to the source.
 fn slice_by_lines(raw: &str, offset: u64, limit: u64, annotate_lines: bool) -> String {
     if offset == 0 && limit == 0 {
         return raw.to_string();
@@ -569,10 +503,6 @@ fn slice_by_lines(raw: &str, offset: u64, limit: u64, annotate_lines: bool) -> S
     }
     out
 }
-
-// ─────────────────────────────────────────────────────────────────────────
-// crux_bash_filter
-// ─────────────────────────────────────────────────────────────────────────
 
 fn bash_filter(runtime: &Runtime, args: &Value) -> Result<String, String> {
     let command = args
@@ -616,10 +546,6 @@ fn bash_filter(runtime: &Runtime, args: &Value) -> Result<String, String> {
     Ok(result.output.text)
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// crux_audit
-// ─────────────────────────────────────────────────────────────────────────
-
 fn audit(runtime: &Runtime) -> Result<String, String> {
     let project = project_root(runtime);
     let stats =
@@ -650,10 +576,6 @@ fn audit(runtime: &Runtime) -> Result<String, String> {
     });
     Ok(serde_json::to_string_pretty(&payload).unwrap())
 }
-
-// ─────────────────────────────────────────────────────────────────────────
-// L5 — crux_find_symbol / crux_get_symbol_source / crux_query_graph / crux_impact
-// ─────────────────────────────────────────────────────────────────────────
 
 fn find_symbol(runtime: &Runtime, args: &Value) -> Result<String, String> {
     let project = project_root(runtime)
@@ -738,7 +660,6 @@ fn get_symbol_source(runtime: &Runtime, args: &Value) -> Result<String, String> 
         }
     }
 
-    // Auto-surface: observations about this symbol OR its file.
     if let Some(footer) = memory_footer_for_symbol(runtime, &project_path, qn, &n.file_path) {
         out.push_str(&footer);
     }
@@ -787,14 +708,6 @@ fn impact(runtime: &Runtime, args: &Value) -> Result<String, String> {
     Ok(serde_json::to_string_pretty(&serialize_nodes(&nodes)).unwrap())
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// L6 — crux_search
-// ─────────────────────────────────────────────────────────────────────────
-
-/// Trim factor for line-aware snippets. `view_lines = 3` means "matched
-/// line plus three lines on either side" — six lines of code context
-/// fits on a typical IDE screen and stays well under the previous
-/// 80-char text snippet's "fits in one line of model output" budget.
 const SEARCH_DEFAULT_VIEW_LINES: u64 = 3;
 const SEARCH_MAX_VIEW_LINES: u64 = 20;
 
@@ -846,15 +759,8 @@ fn search(runtime: &Runtime, args: &Value) -> Result<String, String> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SearchView {
-    /// Char-based 80-char window around the best match (legacy shape,
-    /// smallest payload).
     Compact,
-    /// Line-aware multi-line snippet for code, char-window for prose
-    /// (default — usually saves the agent's follow-up read).
     Default,
-    /// Full chunk content. Skip follow-up reads at the cost of a fatter
-    /// search response — useful when an agent wants every match in
-    /// context.
     Full,
 }
 
@@ -922,9 +828,6 @@ fn render_hit(
     out
 }
 
-/// Return the best-matching multi-line slice of `content`, padded with
-/// `ctx` lines on either side. Line-aware so code excerpts stay
-/// syntactically meaningful.
 fn line_aware_snippet(content: &str, query: &str, ctx: usize) -> String {
     let qtokens: Vec<String> = query
         .split(|c: char| !c.is_alphanumeric() && c != '_')
@@ -990,10 +893,6 @@ fn round4(x: f64) -> f64 {
     (x * 10_000.0).round() / 10_000.0
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// L7 — crux_execute
-// ─────────────────────────────────────────────────────────────────────────
-
 fn execute(runtime: &Runtime, args: &Value) -> Result<String, String> {
     if !runtime.config.layers.l7_sandbox {
         return Err("L7 sandbox is disabled. Set `[layers] l7_sandbox = true` \
@@ -1044,11 +943,6 @@ fn execute(runtime: &Runtime, args: &Value) -> Result<String, String> {
         env: std::collections::HashMap::new(),
         inherit_env,
         isolation,
-        // MCP transport currently does not surface a per-call
-        // `permissions` knob — the host agent is expected to enforce
-        // its own deny-list before dispatching the call. CRUX still
-        // honors a permissions bundle when constructed via the CLI
-        // `--check-agent-perms` path.
         permissions: None,
     };
     let exec = Executor::new();
@@ -1066,10 +960,6 @@ fn execute(runtime: &Runtime, args: &Value) -> Result<String, String> {
     });
     Ok(serde_json::to_string_pretty(&payload).unwrap())
 }
-
-// ─────────────────────────────────────────────────────────────────────────
-// L11 — crux_digest / crux_compact
-// ─────────────────────────────────────────────────────────────────────────
 
 fn digest(runtime: &Runtime, args: &Value) -> Result<String, String> {
     if !runtime.config.layers.l11_digest {
@@ -1145,10 +1035,6 @@ fn serialize_nodes(nodes: &[GraphNode]) -> Value {
     )
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// helpers
-// ─────────────────────────────────────────────────────────────────────────
-
 fn project_root(runtime: &Runtime) -> Option<String> {
     runtime
         .project_root
@@ -1159,15 +1045,6 @@ fn project_root(runtime: &Runtime) -> Option<String> {
 fn project_root_path(runtime: &Runtime) -> Option<PathBuf> {
     runtime.project_root.clone()
 }
-
-// ─────────────────────────────────────────────────────────────────────────
-// L8 auto-surface helpers
-//
-// `crux_read` and `crux_get_symbol_source` call these to append a short
-// footer listing past observations attached to the file / symbol they
-// return. Zero new tool calls, zero new MCP surface — pure context
-// injection, gated by `[layer.l8] auto_surface = true`.
-// ─────────────────────────────────────────────────────────────────────────
 
 fn memory_footer_for_file(
     runtime: &Runtime,
@@ -1205,9 +1082,6 @@ fn memory_footer_for_symbol(
     let project = project_path.display().to_string();
     let mem = MemoryEngine::new(&runtime.conn).ok()?;
 
-    // Merge symbol + file hits and dedupe by observation id, keeping the
-    // highest score. This covers both "a note about this symbol" and
-    // "a note about the file the symbol lives in".
     let mut sym_hits = mem
         .recall_by_symbol(&project, qualified_name, l8.auto_surface_limit)
         .ok()
@@ -1239,11 +1113,6 @@ fn memory_footer_for_symbol(
     Some(format_memory_footer(&sym_hits))
 }
 
-/// Build the set of file_path strings an observation might have been
-/// stored under: the caller-supplied form plus, when distinct, its
-/// complementary form. If the caller gave an absolute path we also
-/// return the project-relative form (and vice versa) so observations
-/// match regardless of which shape was persisted.
 fn file_path_variants(project_path: &std::path::Path, file_path: &str) -> Vec<String> {
     let mut out = vec![file_path.to_string()];
     let as_path = std::path::Path::new(file_path);
@@ -1356,7 +1225,6 @@ mod tests {
         let runtime = make_runtime(project.clone());
         seed_graph(&runtime, &project.display().to_string());
 
-        // A non-digest tool should record an event.
         let _ = call(
             &runtime,
             "crux_find_symbol",
@@ -1375,7 +1243,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let project = dir.path().to_path_buf();
         let runtime = make_runtime(project);
-        // Force a digest call (no pending events; will return empty).
         let _ = call(&runtime, "crux_digest", &json!({"session_id": "mcps"}));
         let engine = DigestEngine::new(&runtime.conn, runtime.config.layer.l11.clone());
         let pending = engine.list_pending_events("mcps", 50).unwrap();
@@ -1558,9 +1425,6 @@ mod tests {
 
     #[test]
     fn execute_dispatcher_rejects_when_l7_disabled() {
-        // When the user explicitly turns L7 off in config, crux_execute must
-        // fail fast with a message that tells them exactly how to re-enable —
-        // silent pass-through would violate the opt-out semantics.
         let dir = tempfile::tempdir().unwrap();
         let mut runtime = make_runtime(dir.path().to_path_buf());
         runtime.config.layers.l7_sandbox = false;
@@ -1573,9 +1437,6 @@ mod tests {
 
     #[test]
     fn execute_dispatcher_runs_by_default_without_explicit_config() {
-        // Regression: the default Config must have l7_sandbox on, so an
-        // agent can call `crux_execute` immediately after `crux init`
-        // without editing config.toml.
         if std::process::Command::new("bash")
             .arg("--version")
             .output()
@@ -1647,12 +1508,10 @@ mod tests {
         let v: Value = serde_json::from_str(&out).unwrap();
         let arr = v.as_array().unwrap();
         assert!(!arr.is_empty(), "expected at least one hit");
-        // New flat shape: title + file + lines + snippet at top level.
         assert_eq!(arr[0]["title"], "compute_delta");
         assert_eq!(arr[0]["file"], "src/lib.rs");
         assert!(arr[0].get("lines").is_some());
         assert!(arr[0].get("snippet").is_some());
-        // Verbose metadata stays hidden by default.
         assert!(
             arr[0].get("debug").is_none(),
             "debug must be off-by-default"
@@ -1664,7 +1523,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let project = dir.path().to_path_buf();
         let runtime = make_runtime(project.clone());
-        // Multi-line content so the line-aware path has something to slice.
         let body =
             "fn untouched_a() {}\nfn compute_delta(a: i32) -> i32 { a + 1 }\nfn untouched_b() {}\n";
         seed_indexed_code_chunk_with_body(&runtime, &project, body);
@@ -1673,8 +1531,6 @@ mod tests {
         let v: Value = serde_json::from_str(&out).unwrap();
         let arr = v.as_array().unwrap();
         let snip = arr[0]["snippet"].as_str().unwrap();
-        // Matched line is marked with `> ` and surrounding context lines
-        // get a leading `  ` prefix.
         assert!(
             snip.lines()
                 .any(|l| l.starts_with("> ") && l.contains("compute_delta")),
@@ -1698,7 +1554,6 @@ mod tests {
         let v: Value = serde_json::from_str(&out).unwrap();
         let arr = v.as_array().unwrap();
         let snip = arr[0]["snippet"].as_str().unwrap();
-        // Compact never uses the `> `/`  ` line-prefix shape.
         assert!(
             !snip.contains("\n> "),
             "compact view should not be line-aware: {snip}"
@@ -1753,9 +1608,6 @@ mod tests {
         let runtime = make_runtime(project.clone());
         seed_graph(&runtime, &project.display().to_string());
 
-        // Pick the just-seeded ast_node id for compute_delta and tie a
-        // chunk to it. The dispatcher's source_id JOIN should then
-        // surface the qualified_name on the hit.
         let source_id: i64 = runtime
             .conn
             .query_row(
@@ -1832,10 +1684,6 @@ mod tests {
         assert!(out.contains("file: src/lib.rs"));
     }
 
-    // ─────────────────────────────────────────────────────────────────
-    // L8 auto-surface integration tests
-    // ─────────────────────────────────────────────────────────────────
-
     fn seed_file_obs(
         runtime: &Runtime,
         project: &std::path::Path,
@@ -1886,8 +1734,6 @@ mod tests {
         std::fs::write(&file_abs, "fn zstd() {}\n").unwrap();
         let runtime = make_runtime(project.clone());
 
-        // Store observation against the relative path; read with the
-        // absolute path — the variant logic must still match.
         seed_file_obs(
             &runtime,
             &project,
@@ -1966,7 +1812,6 @@ mod tests {
 
         let out = read(&runtime, &json!({"file_path": abs})).unwrap();
         assert!(out.contains("[crux:l8] 2 past observation(s)"));
-        // Exactly two "#<id>" footer lines.
         let footer_lines = out
             .lines()
             .filter(|l| l.trim_start().starts_with('#'))
@@ -1976,9 +1821,6 @@ mod tests {
 
     #[test]
     fn read_footer_matches_relative_path_variant() {
-        // Read is called with an absolute path (the real-world shape);
-        // observation was stored with the project-relative path. The
-        // variant builder must surface both forms.
         let dir = tempfile::tempdir().unwrap();
         let project = dir.path().to_path_buf();
         std::fs::create_dir_all(project.join("src")).unwrap();
@@ -2050,7 +1892,6 @@ mod tests {
         let runtime = make_runtime(project.clone());
         seed_graph(&runtime, &project.display().to_string());
 
-        // Attach the obs to the FILE (not the symbol).
         seed_file_obs(
             &runtime,
             &project,
@@ -2068,10 +1909,6 @@ mod tests {
         assert!(out.contains("[crux:l8]"));
         assert!(out.contains("crate entrypoint"));
     }
-
-    // ─────────────────────────────────────────────────────────────────
-    // crux_read range + symbol slicing
-    // ─────────────────────────────────────────────────────────────────
 
     fn make_multi_line_project(name: &str, body: &str) -> (tempfile::TempDir, PathBuf, String) {
         let dir = tempfile::tempdir().unwrap();
@@ -2096,7 +1933,6 @@ mod tests {
             &json!({"file_path": abs, "offset": 3, "limit": 4}),
         )
         .unwrap();
-        // Lines 3..=6 only. Lines 1, 2, 7, 8 must be absent.
         assert!(out.contains("line-3"));
         assert!(out.contains("line-6"));
         assert!(!out.contains("line-1"));
@@ -2142,7 +1978,6 @@ mod tests {
             &json!({"file_path": abs, "offset": 1, "limit": 2}),
         )
         .unwrap();
-        // Both must contain the top two lines and exclude C.
         for out in [&a, &b] {
             assert!(out.contains('A'));
             assert!(out.contains('B'));
@@ -2156,7 +1991,6 @@ mod tests {
         let (_dir, project, abs) = make_multi_line_project("tiny.txt", body);
         let runtime = make_runtime(project);
 
-        // offset well past EOF → empty result, not an error.
         let out = read(
             &runtime,
             &json!({"file_path": abs, "offset": 100, "limit": 5}),
@@ -2167,7 +2001,6 @@ mod tests {
 
     #[test]
     fn read_full_file_legacy_behavior_unchanged() {
-        // No offset/limit/symbol → whole file, no annotation gutter.
         let body = "hello\nworld\n";
         let (_dir, project, abs) = make_multi_line_project("full.txt", body);
         let runtime = make_runtime(project);
@@ -2175,7 +2008,6 @@ mod tests {
         let out = read(&runtime, &json!({"file_path": abs})).unwrap();
         assert!(out.contains("hello"));
         assert!(out.contains("world"));
-        // No gutter → no "    1  hello" shape.
         assert!(!out.contains("    1  hello"));
     }
 
@@ -2191,7 +2023,6 @@ mod tests {
         .unwrap();
         let runtime = make_runtime(project.clone());
 
-        // Seed the symbol at line 2 so `symbol =` resolves to line 2 only.
         let store = GraphStore::new(&runtime.conn);
         let result = crux_l5_ast::ParseResult {
             nodes: vec![crux_l5_ast::ParsedNode {
@@ -2229,7 +2060,6 @@ mod tests {
             !out.contains("fn after()"),
             "line 3 must be excluded: {out}"
         );
-        // Metadata prefix present by default.
         assert!(out.contains("file: src/lib.rs"));
         assert!(out.contains("lines: 2-2"));
     }
@@ -2252,7 +2082,6 @@ mod tests {
 
     #[test]
     fn read_range_still_appends_memory_footer() {
-        // Range reads must not bypass L8 auto-surface.
         let body = (1..=20)
             .map(|i| format!("line-{i}"))
             .collect::<Vec<_>>()
@@ -2277,14 +2106,6 @@ mod tests {
         assert!(out.contains("ranged-note"));
     }
 
-    // ─────────────────────────────────────────────────────────────────
-    // crux_read outline-first auto-mode (L4+L5 fusion)
-    // ─────────────────────────────────────────────────────────────────
-
-    /// Seed a parsed file with `n_symbols` function rows spaced
-    /// evenly through `total_lines`. Mirrors what L5 indexer would
-    /// emit for a real file. `rel_path` is the project-relative path
-    /// the GraphStore key needs.
     fn seed_outline_graph(
         runtime: &Runtime,
         project: &str,
@@ -2349,7 +2170,6 @@ mod tests {
         assert!(out.contains("5 symbols"));
         assert!(out.contains("demo::big::fn_0"));
         assert!(out.contains("demo::big::fn_4"));
-        // Body content (the `// line N` comments) must NOT be present.
         assert!(
             !out.contains("// line 100"),
             "outline must not include body: {out}"
@@ -2374,8 +2194,6 @@ mod tests {
 
     #[test]
     fn read_outline_falls_back_when_l5_empty() {
-        // File above threshold but L5 has no symbols indexed → must
-        // gracefully return full body, not error.
         let (_dir, project, abs) = make_big_file_project("unindexed.rs", 1500);
         let mut runtime = make_runtime(project);
         runtime.config.layer.l4.outline_above_lines = 1000;
@@ -2404,7 +2222,6 @@ mod tests {
 
     #[test]
     fn read_outline_skipped_with_offset_limit() {
-        // Range reads are already lean — outline must not fire.
         let (_dir, project, abs) = make_big_file_project("ranged.rs", 1500);
         let mut runtime = make_runtime(project.clone());
         runtime.config.layer.l4.outline_above_lines = 1000;
@@ -2455,15 +2272,12 @@ mod tests {
             out.contains("lines 1-") || out.contains("line 1"),
             "line range missing: {out}"
         );
-        // Drill-in hint must be present so agents know the next step.
         assert!(out.contains("crux_read --symbol="));
         assert!(out.contains("--force_full=true"));
     }
 
     #[test]
     fn read_outline_truncates_above_max_rows() {
-        // Synthetic monster with 250 symbols — must collapse to
-        // OUTLINE_MAX_ROWS (200) plus a "... and N more" hint.
         let (_dir, project, abs) = make_big_file_project("monster.rs", 5000);
         let mut runtime = make_runtime(project.clone());
         runtime.config.layer.l4.outline_above_lines = 1000;
@@ -2477,7 +2291,6 @@ mod tests {
             out.contains("and 50 more"),
             "truncation hint missing: {out}"
         );
-        // First 200 rows must be present, row 200+ must not.
         assert!(out.contains("demo::big::fn_0"));
         assert!(out.contains("demo::big::fn_199"));
         assert!(
@@ -2499,7 +2312,6 @@ mod tests {
         let runtime = make_runtime(project.clone());
         seed_graph(&runtime, &project.display().to_string());
 
-        // Single obs carrying BOTH symbol and file_path that match.
         let mem = MemoryEngine::new(&runtime.conn).unwrap();
         let mut o = NewObservation::minimal(
             project.display().to_string(),
@@ -2516,7 +2328,6 @@ mod tests {
             &json!({"qualified_name": "demo::delta::compute_delta"}),
         )
         .unwrap();
-        // Exactly one footer entry despite matching both filters.
         let count = out.matches("joint obs").count();
         assert_eq!(count, 1, "dedup failed: footer = {out}");
     }

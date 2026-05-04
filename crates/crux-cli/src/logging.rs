@@ -1,8 +1,3 @@
-//! `tracing-subscriber` setup. Default level is `info` unless overridden by
-//! `RUST_LOG`, the `--log` flag, or the global config (resolved later).
-//!
-//! Logs go to stderr so stdout stays clean for MCP / hook protocols.
-
 use anyhow::Result;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 

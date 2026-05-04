@@ -1,15 +1,3 @@
-//! `crux audit` — health snapshot via Layer 9 Coach.
-//!
-//! Thin wrapper around [`crux_l9_coach::CoachEngine::snapshot`] that
-//! renders the result as a human-readable or JSON report alongside the
-//! raw per-layer telemetry table. `crux coach snapshot` is equivalent.
-//!
-//! `--watch` polls the snapshot on a fixed interval (default 5s) and
-//! re-renders. In `--json` mode each iteration emits one compact JSON
-//! object terminated by a newline (NDJSON / JSON Lines), so consumers
-//! can stream the snapshots into a dashboard or `jq` pipeline without
-//! waiting for the process to exit.
-
 use std::io::Write;
 use std::time::{Duration, Instant};
 
@@ -22,24 +10,14 @@ use crux_l9_coach::CoachEngine;
 use super::resolve_project_root;
 use crate::Cli;
 
-/// Default polling interval when `--watch` is given without an explicit
-/// `--interval-ms`. 5s is the same cadence `htop` defaults to.
 const DEFAULT_WATCH_INTERVAL_MS: u64 = 5000;
-/// Floor on the polling interval so a runaway shell loop can't spin the
-/// CPU. 200ms is enough headroom for the L9 snapshot pass even on a
-/// debug build.
 const MIN_WATCH_INTERVAL_MS: u64 = 200;
 
 #[derive(Debug, Default, ClapArgs)]
 pub struct Args {
-    /// Re-render the audit on a fixed interval until the process is
-    /// interrupted. Combine with `--json` for NDJSON output suitable
-    /// for streaming into `jq` or a dashboard.
     #[arg(long)]
     pub watch: bool,
 
-    /// Polling interval in milliseconds when `--watch` is set.
-    /// Floored at 200ms; defaults to 5000ms.
     #[arg(long = "interval-ms", value_name = "MS")]
     pub interval_ms: Option<u64>,
 }
@@ -51,8 +29,6 @@ pub fn run(cli: &Cli, args: &Args) -> Result<()> {
     run_once(cli)
 }
 
-/// Clamp a user-supplied poll interval to the project-wide floor. Pulled
-/// out so the same logic is unit-testable without invoking `clap`.
 pub(crate) fn clamp_interval_ms(raw: Option<u64>) -> u64 {
     raw.unwrap_or(DEFAULT_WATCH_INTERVAL_MS)
         .max(MIN_WATCH_INTERVAL_MS)
@@ -179,10 +155,6 @@ fn active_layer_summary(t: &crux_core::config::LayerToggles) -> serde_json::Valu
     })
 }
 
-/// Pure builder for the `--json` payload. Decoupled from I/O so both the
-/// one-shot `run_once` path and the streaming `run_watch` path can share
-/// the same shape, and so unit tests can exercise it without spinning a
-/// runtime.
 pub(crate) fn build_payload(
     project: Option<&str>,
     layers: &crux_core::config::LayerToggles,
@@ -206,10 +178,6 @@ pub(crate) fn build_payload(
     })
 }
 
-/// Scrape Claude Code + OpenClaw configs for a project and return a
-/// compact summary of the unioned deny / allow lists. Surfaced in the
-/// audit JSON payload so `crux audit --json --watch` consumers can
-/// alert on rule drift without re-implementing the loader.
 fn build_perms_summary(project: Option<&str>) -> serde_json::Value {
     let project_path = project.map(std::path::PathBuf::from);
     let perms = crux_l7_sandbox::agent_perms::load_for_project(project_path.as_deref());
@@ -236,11 +204,6 @@ fn build_perms_summary(project: Option<&str>) -> serde_json::Value {
     })
 }
 
-/// `crux audit --watch` — re-render on a fixed cadence until the
-/// process is interrupted. JSON mode emits NDJSON (one compact object
-/// per line) so a downstream `jq` / dashboard pipeline gets a clean
-/// stream. Text mode clears the screen between iterations and adds a
-/// short footer telling the user how often it polls.
 fn run_watch(cli: &Cli, args: &Args) -> Result<()> {
     let interval = Duration::from_millis(clamp_interval_ms(args.interval_ms));
     let stdout = std::io::stdout();
@@ -249,8 +212,6 @@ fn run_watch(cli: &Cli, args: &Args) -> Result<()> {
     loop {
         let tick_start = Instant::now();
         watch_step(cli, &mut handle, interval)?;
-        // Sleep the *remainder* of the interval so heavy snapshots don't
-        // accumulate drift across iterations.
         let elapsed = tick_start.elapsed();
         if elapsed < interval {
             std::thread::sleep(interval - elapsed);
@@ -258,9 +219,6 @@ fn run_watch(cli: &Cli, args: &Args) -> Result<()> {
     }
 }
 
-/// One iteration of the watch loop: collect the coach snapshot + render
-/// either NDJSON or text. Lives behind a generic `Write` so tests can
-/// drive it against a `Vec<u8>` without spawning a subprocess.
 #[allow(dead_code)]
 pub(crate) fn watch_step<W: Write>(cli: &Cli, writer: &mut W, interval: Duration) -> Result<()> {
     let project = resolve_project_root(cli.project.as_deref());
@@ -278,15 +236,10 @@ pub(crate) fn watch_step<W: Write>(cli: &Cli, writer: &mut W, interval: Duration
     let payload = build_payload(pr_str.as_deref(), &runtime.config.layers, &data, &stats);
 
     if cli.json {
-        // Compact NDJSON — one line per snapshot. `jq -c` friendly.
         let line = serde_json::to_string(&payload)?;
         writeln!(writer, "{}", line)?;
         writer.flush()?;
     } else {
-        // Clear-screen ANSI escape + cursor home, then re-render the
-        // human report. Falls back gracefully on terminals that don't
-        // honor it (the escape just shows up as garbage but doesn't
-        // crash anything).
         write!(writer, "\x1b[2J\x1b[H")?;
         write_text(
             writer,
@@ -305,9 +258,6 @@ pub(crate) fn watch_step<W: Write>(cli: &Cli, writer: &mut W, interval: Duration
     Ok(())
 }
 
-/// Render the human-readable audit body to a generic writer. Lives
-/// alongside the `println!`-based one-shot rendering in `run_once` so
-/// the watch path doesn't have to fight stdout locking semantics.
 fn write_text<W: Write>(
     writer: &mut W,
     project_opt: Option<&std::path::Path>,
@@ -447,8 +397,6 @@ mod tests {
 
     #[test]
     fn clamp_interval_floors_too_aggressive_polling() {
-        // Anything below the 200ms floor must round up so a runaway
-        // shell loop can't peg the CPU.
         assert_eq!(clamp_interval_ms(Some(0)), MIN_WATCH_INTERVAL_MS);
         assert_eq!(clamp_interval_ms(Some(50)), MIN_WATCH_INTERVAL_MS);
         assert_eq!(clamp_interval_ms(Some(199)), MIN_WATCH_INTERVAL_MS);
@@ -473,9 +421,6 @@ mod tests {
             savings: 900,
         }];
         let p = build_payload(Some("/tmp/proj"), &layers, &data, &stats);
-        // Top-level keys we promise to consumers. `agent_permissions`
-        // is always present even when there are no rules on disk so
-        // dashboards can rely on it without a null-check.
         for k in &[
             "project",
             "coach",
@@ -486,14 +431,11 @@ mod tests {
         ] {
             assert!(p.get(*k).is_some(), "missing top-level key: {}", k);
         }
-        // agent_permissions block must always carry the count fields.
         let perms = &p["agent_permissions"];
         assert!(perms["deny_count"].is_u64());
         assert!(perms["allow_count"].is_u64());
         assert!(perms["rules"].is_array());
-        // Project echoed verbatim.
         assert_eq!(p["project"].as_str(), Some("/tmp/proj"));
-        // Telemetry rows preserved 1:1.
         let tel = p["telemetry"].as_array().unwrap();
         assert_eq!(tel.len(), 1);
         assert_eq!(tel[0]["layer"].as_str(), Some("l3"));
@@ -514,9 +456,7 @@ mod tests {
         let data = dummy_coach();
         let p = build_payload(Some("/x"), &layers, &data, &[]);
         let line = serde_json::to_string(&p).unwrap();
-        // Compact JSON has no embedded newlines.
         assert!(!line.contains('\n'), "compact NDJSON must be single-line");
-        // And must round-trip.
         let back: serde_json::Value = serde_json::from_str(&line).unwrap();
         assert_eq!(back["project"].as_str(), Some("/x"));
     }

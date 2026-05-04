@@ -1,30 +1,3 @@
-//! `crux hook` — agent integration entry points.
-//!
-//! Phase 1 implements the PreToolUse path for the `Read` tool. The protocol
-//! is the one Claude Code uses: a JSON event on stdin, a JSON response on
-//! stdout, a non-zero exit code if the read should be blocked.
-//!
-//! Event shape (subset we care about):
-//! ```json
-//! {
-//!   "tool_name": "Read",
-//!   "tool_input": { "file_path": "/abs/path", "offset": 0, "limit": 0 },
-//!   "session_id": "...",
-//!   "agent_id": "..."
-//! }
-//! ```
-//!
-//! Response shape:
-//! ```json
-//! { "decision": "allow" | "block", "message": "..." }
-//! ```
-//!
-//! `crux hook openclaw-compact` is the OpenClaw-side trigger for L11
-//! compaction. The event mirrors Claude Code's `PreCompact` payload
-//! (a session id, optional cwd, optional trigger source) and routes
-//! into the same `DigestEngine::compact` path that backs `crux compact`
-//! — so OpenClaw stays a *trigger source*, not a second code path.
-
 use std::io::Read;
 use std::path::PathBuf;
 
@@ -41,17 +14,10 @@ use crate::Cli;
 
 #[derive(Debug, Subcommand)]
 pub enum Cmd {
-    /// PreToolUse handler. Reads a JSON event from stdin.
     PreTool,
-    /// PostToolUse handler. Reads a JSON event from stdin.
     PostTool,
-    /// Session lifecycle hooks (placeholder).
     SessionStart,
     SessionEnd,
-    /// OpenClaw compaction trigger. Reads a JSON event from stdin and
-    /// runs `DigestEngine::compact` for the event's `session_id`. The
-    /// hook is a trigger source only — the actual roll-up logic is
-    /// shared with `crux compact`.
     OpenclawCompact,
 }
 
@@ -64,10 +30,6 @@ pub fn run(cli: &Cli, cmd: &Cmd) -> Result<()> {
         Cmd::OpenclawCompact => openclaw_compact(cli),
     }
 }
-
-// ─────────────────────────────────────────────────────────────────────────
-// Event types
-// ─────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
 struct ToolEvent {
@@ -91,15 +53,12 @@ struct ToolInput {
     offset: Option<u64>,
     #[serde(default)]
     limit: Option<u64>,
-    /// Bash uses `command`; we extract it for L11 turn-event targets.
     #[serde(default)]
     command: Option<String>,
-    /// Grep / Glob / mcp search tools use `pattern`/`query`.
     #[serde(default)]
     pattern: Option<String>,
     #[serde(default)]
     query: Option<String>,
-    /// Symbol-style targets (`crux_get_symbol_source`, `crux_find_symbol`).
     #[serde(default)]
     qualified_name: Option<String>,
     #[serde(default)]
@@ -108,29 +67,18 @@ struct ToolInput {
 
 #[derive(Debug, Default, Deserialize)]
 struct ToolResponse {
-    /// Claude Code sets this when a tool call fails. Present + truthy
-    /// → L11 marks the event as `err`.
     #[serde(default)]
     error: Option<String>,
     #[serde(default)]
     is_error: Option<bool>,
 }
 
-/// Subset of the OpenClaw / Claude Code `PreCompact` event we care
-/// about. We accept both `snake_case` (Claude Code wire) and
-/// `camelCase` (OpenClaw plugin) field names so the same hook handler
-/// works for either trigger source.
 #[derive(Debug, Default, Deserialize)]
 struct CompactEvent {
     #[serde(default, alias = "sessionId")]
     session_id: String,
-    /// Optional working directory for the host conversation. When
-    /// present we prefer it over the CLI `--project` flag because the
-    /// hook may fire from a different cwd than the project root.
     #[serde(default, alias = "projectDir", alias = "project_dir")]
     cwd: Option<String>,
-    /// `"manual"` / `"auto"` on Claude Code; OpenClaw uses the same
-    /// strings. Surfaced in the response message for observability.
     #[serde(default)]
     trigger: Option<String>,
 }
@@ -142,17 +90,12 @@ struct HookResponse<'a> {
     message: Option<String>,
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// pre-tool
-// ─────────────────────────────────────────────────────────────────────────
-
 fn pre_tool(cli: &Cli) -> Result<()> {
     let project = resolve_project_root(cli.project.as_deref());
     let runtime = Runtime::open(Some(project.clone()))?;
 
     let event = read_event_from_stdin().context("reading hook event from stdin")?;
 
-    // Only Read is in scope for Phase 1. Pass everything else through.
     if !matches!(event.tool_name.as_str(), "Read") {
         respond(&HookResponse {
             decision: "allow",
@@ -190,9 +133,6 @@ fn pre_tool(cli: &Cli) -> Result<()> {
         event.session_id.as_str()
     };
 
-    // Compose per-call options from config + project files. The
-    // contextignore engine reads `<project>/.crux/contextignore` and
-    // (optionally) `$CRUX_HOME/contextignore`.
     let crux_home = crux_core::paths::crux_home().ok();
     let ci = ContextIgnore::load(&project, crux_home.as_deref());
     let opts = CheckOptions {
@@ -239,8 +179,6 @@ fn pre_tool(cli: &Cli) -> Result<()> {
                 digest.len()
             )),
         },
-        // Delta in block mode: hand the diff back to the agent instead of
-        // letting the full file re-enter context.
         (
             CacheDecision::Delta {
                 summary,
@@ -257,8 +195,6 @@ fn pre_tool(cli: &Cli) -> Result<()> {
                 body
             )),
         },
-        // Delta in warn / shadow modes: still allow the full read but
-        // preview the diff so the agent knows what changed.
         (
             CacheDecision::Delta {
                 summary,
@@ -281,14 +217,6 @@ fn pre_tool(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// post-tool
-// ─────────────────────────────────────────────────────────────────────────
-
-/// Outcome of [`perform_compact`]. Mirrors the shape `crux compact`
-/// already emits but stays a private struct because the hook protocol
-/// doesn't promise stable JSON for it (callers should rely on `crux
-/// compact --json` for machine output).
 #[derive(Debug, Clone)]
 struct CompactOutcome {
     session_id: String,
@@ -323,15 +251,9 @@ impl CompactOutcome {
     }
 }
 
-// ────────────────────────────────────────────────────────────────────────
-// openclaw-compact
-// ────────────────────────────────────────────────────────────────────────
-
 fn openclaw_compact(cli: &Cli) -> Result<()> {
     let event = read_compact_event_from_stdin().context("reading compact hook event from stdin")?;
 
-    // Event `cwd` wins over `--project` because the hook runs from the
-    // host process's cwd, which may not be the CRUX project root.
     let project = match event.cwd.as_deref().filter(|s| !s.is_empty()) {
         Some(dir) => PathBuf::from(dir),
         None => resolve_project_root(cli.project.as_deref()),
@@ -346,7 +268,6 @@ fn openclaw_compact(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
-/// Runtime adapter for [`compact_session`].
 fn perform_compact(runtime: &Runtime, event: &CompactEvent) -> CompactOutcome {
     let session_id = normalize_session_id(&event.session_id);
     if !runtime.config.layers.l11_digest {
@@ -356,8 +277,6 @@ fn perform_compact(runtime: &Runtime, event: &CompactEvent) -> CompactOutcome {
     compact_session(&engine, event)
 }
 
-/// Normalize the event's `session_id`: empty / whitespace fallback to
-/// `default`, otherwise trimmed.
 fn normalize_session_id(raw: &str) -> String {
     if raw.trim().is_empty() {
         "default".to_string()
@@ -366,9 +285,6 @@ fn normalize_session_id(raw: &str) -> String {
     }
 }
 
-/// Pure core: takes a constructed [`DigestEngine`] + parsed event and
-/// runs the compaction. Factored out so unit tests can drive it
-/// against an in-memory DB without standing up a full `Runtime`.
 fn compact_session(engine: &DigestEngine<'_>, event: &CompactEvent) -> CompactOutcome {
     let session_id = normalize_session_id(&event.session_id);
     let pending_before = engine.pending_count(&session_id).unwrap_or(0);
@@ -436,8 +352,6 @@ fn post_tool(cli: &Cli) -> Result<()> {
             compressed_tokens: 0,
             summary,
         };
-        // Record best-effort: a digest failure must never block the
-        // post-tool hook (which is otherwise pure infrastructure).
         let _ = digest.record(&turn);
     }
 
@@ -489,7 +403,6 @@ fn derive_status(ev: &ToolEvent) -> TurnStatus {
 fn build_summary(tool: &str, target: Option<&str>, status: TurnStatus) -> String {
     let base = match target {
         Some(t) if !t.is_empty() => {
-            // Truncate noisy targets to keep the summary one-liner sane.
             let trimmed = t.lines().next().unwrap_or(t);
             if trimmed.len() > 80 {
                 format!("{tool} {}…", &trimmed[..80])
@@ -504,10 +417,6 @@ fn build_summary(tool: &str, target: Option<&str>, status: TurnStatus) -> String
         other => format!("{base} [{}]", other.as_str()),
     }
 }
-
-// ─────────────────────────────────────────────────────────────────────────
-// helpers
-// ─────────────────────────────────────────────────────────────────────────
 
 fn read_event_from_stdin() -> Result<ToolEvent> {
     let mut buf = String::new();
@@ -589,8 +498,6 @@ mod tests {
         }
     }
 
-    // ── parse_compact_event ─────────────────────────────────────────
-
     #[test]
     fn parse_empty_returns_default_event() {
         let ev = parse_compact_event("").unwrap();
@@ -613,7 +520,6 @@ mod tests {
 
     #[test]
     fn parse_camel_case_aliases() {
-        // OpenClaw plugin shape
         let raw = r#"{"sessionId":"sess-2","projectDir":"/proj","trigger":"auto"}"#;
         let ev = parse_compact_event(raw).unwrap();
         assert_eq!(ev.session_id, "sess-2");
@@ -634,8 +540,6 @@ mod tests {
         assert!(err.to_string().contains("compact event was not valid JSON"));
     }
 
-    // ── normalize_session_id ────────────────────────────────────────
-
     #[test]
     fn normalize_session_defaults_when_empty() {
         assert_eq!(normalize_session_id(""), "default");
@@ -646,8 +550,6 @@ mod tests {
     fn normalize_session_trims_whitespace() {
         assert_eq!(normalize_session_id("  spaced  "), "spaced");
     }
-
-    // ── CompactOutcome ──────────────────────────────────────────────
 
     #[test]
     fn outcome_skipped_message_format() {
@@ -662,8 +564,6 @@ mod tests {
         assert!(out.message().starts_with("crux: openclaw-compact skipped"));
     }
 
-    // ── compact_session core ────────────────────────────────────────
-
     #[test]
     fn compact_defaults_session_when_empty() {
         let conn = crux_core::db::open_in_memory().unwrap();
@@ -671,8 +571,6 @@ mod tests {
         let event = CompactEvent::default();
         let out = compact_session(&engine, &event);
         assert_eq!(out.session_id, "default");
-        // No pending events → digest still created with event_count=0,
-        // matching the `crux compact` semantics.
         assert!(out.skipped.is_none());
         assert_eq!(out.event_count, 0);
     }
@@ -716,7 +614,6 @@ mod tests {
 
     #[test]
     fn compact_message_default_trigger_label() {
-        // No trigger field in event → message falls back to "openclaw".
         let conn = crux_core::db::open_in_memory().unwrap();
         let engine = DigestEngine::new(&conn, cfg());
         engine.record(&ev("s2", "Bash")).unwrap();
@@ -730,8 +627,6 @@ mod tests {
 
     #[test]
     fn compact_idempotent_when_no_new_events() {
-        // Calling twice in a row: second call has 0 pending events but
-        // still succeeds (matches `crux compact` behaviour).
         let conn = crux_core::db::open_in_memory().unwrap();
         let engine = DigestEngine::new(&conn, cfg());
         engine.record(&ev("s3", "Read")).unwrap();
@@ -745,7 +640,6 @@ mod tests {
         assert!(second.skipped.is_none());
         assert_eq!(second.event_count, 0);
         assert_eq!(second.pending_before, 0);
-        // Each compaction inserts a fresh digest row, so ids differ.
         assert_ne!(first.digest_id, second.digest_id);
     }
 }

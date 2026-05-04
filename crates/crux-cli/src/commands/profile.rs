@@ -1,5 +1,3 @@
-//! `crux profile` — list / inspect / apply profiles.
-
 use std::fs;
 use std::path::Path;
 
@@ -14,20 +12,15 @@ use crate::Cli;
 
 #[derive(Debug, Subcommand)]
 pub enum Cmd {
-    /// List available profiles.
     List,
-    /// Show full text of a profile.
     Show {
         #[arg(value_name = "NAME")]
         name: String,
     },
-    /// Apply a profile to the current project: rewrites CLAUDE.md and
-    /// updates `.crux/config.toml#layer.l1.profile`.
     Apply {
         #[arg(value_name = "NAME")]
         name: String,
     },
-    /// Show the currently-active profile for the project.
     Current,
 }
 
@@ -74,9 +67,6 @@ fn apply(cli: &Cli, name: &str) -> Result<()> {
 
     let profile = profiles::get(name).ok_or_else(|| anyhow::anyhow!("unknown profile: {name}"))?;
 
-    // Pull existing project metadata out of CLAUDE.md so we can preserve
-    // the user's hand-edited Type/Stack/Features lines instead of
-    // overwriting them with placeholders.
     let claude_path = project.join("CLAUDE.md");
     let (project_type, stack, features) = parse_existing_meta(&claude_path);
 
@@ -92,7 +82,6 @@ fn apply(cli: &Cli, name: &str) -> Result<()> {
     fs::write(&claude_path, &rendered)
         .with_context(|| format!("writing {}", claude_path.display()))?;
 
-    // Update config.toml#layer.l1.profile.
     let cfg_path = project.join(".crux/config.toml");
     let mut cfg = config::load(Some(&project))?.config;
     cfg.layer.l1.profile = profile.name.into();
@@ -134,9 +123,6 @@ fn current(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
-/// Parse a previously-rendered CLAUDE.md to recover project Type/Stack/Features.
-/// Returns `(None, None, None)` when the file doesn't exist or the lines
-/// aren't found; the caller falls back to placeholders.
 fn parse_existing_meta(path: &Path) -> (Option<String>, Option<String>, Option<String>) {
     let Ok(content) = fs::read_to_string(path) else {
         return (None, None, None);

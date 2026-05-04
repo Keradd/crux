@@ -1,20 +1,9 @@
-//! Deterministic, LLM-free renderer that turns a list of [`TurnEvent`]s
-//! into a compact multi-line summary.
-//!
-//! The renderer groups events into a fixed set of [`Bucket`]s based on
-//! tool name, then formats each bucket with its own collapsed view.
-//! Output stays under the caller-supplied token budget by truncating
-//! the longest bucket with `…` once the running estimate exceeds the
-//! ceiling.
-
 use std::collections::BTreeMap;
 
 use crux_core::tokens;
 
 use crate::types::{TurnEvent, TurnStatus};
 
-/// Tool family for grouping. Adding a new bucket = one match arm in
-/// [`bucket_for`] + one writer in the private `render_bucket` helper.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Bucket {
     Read,
@@ -40,8 +29,6 @@ impl Bucket {
     }
 }
 
-/// Map a tool name to its bucket. Names match what Claude Code
-/// emits natively + the CRUX MCP tool prefix.
 pub fn bucket_for(tool_name: &str) -> Bucket {
     match tool_name {
         "Read" | "NotebookRead" | "mcp__crux__crux_read" | "mcp__crux__crux_get_symbol_source" => {
@@ -67,15 +54,11 @@ pub fn bucket_for(tool_name: &str) -> Bucket {
     }
 }
 
-/// Render a list of events as a compact summary. `max_tokens` is a soft
-/// upper bound; the renderer will append `… (truncated)` and stop
-/// formatting buckets once it crosses it. `0` means no truncation.
 pub fn render(events: &[TurnEvent], max_tokens: u32) -> String {
     if events.is_empty() {
         return "(no turn events recorded)".into();
     }
 
-    // Bucket → ordered list of events (preserves chronological order).
     let mut buckets: BTreeMap<Bucket, Vec<&TurnEvent>> = BTreeMap::new();
     for ev in events {
         buckets
@@ -84,12 +67,10 @@ pub fn render(events: &[TurnEvent], max_tokens: u32) -> String {
             .push(ev);
     }
 
-    // Header line with high-level counts.
     let total = events.len();
     let mut out = String::new();
     out.push_str(&format!("Digest of {} tool call(s)\n", total));
 
-    // Status totals so error-heavy sessions surface immediately.
     let mut errs = 0usize;
     let mut timeouts = 0usize;
     for ev in events {
@@ -103,7 +84,6 @@ pub fn render(events: &[TurnEvent], max_tokens: u32) -> String {
         out.push_str(&format!("Errors: {errs} err, {timeouts} timeout\n"));
     }
 
-    // Iterate buckets in fixed enum order.
     let order = [
         Bucket::Read,
         Bucket::Edit,
@@ -142,7 +122,6 @@ fn render_bucket(b: Bucket, events: &[&TurnEvent]) -> String {
     out.push_str(&format!("{}:\n", b.label()));
     match b {
         Bucket::Read | Bucket::Edit => {
-            // Group by target (path), keep counts + status sum.
             let counts = group_by_target(events);
             for (target, count, errs) in counts {
                 let suffix = if errs > 0 {
@@ -154,7 +133,6 @@ fn render_bucket(b: Bucket, events: &[&TurnEvent]) -> String {
             }
         }
         Bucket::Bash => {
-            // Bash collapses to first-word of command + status counts.
             let mut by_first: BTreeMap<String, (usize, usize)> = BTreeMap::new();
             for ev in events {
                 let first = ev
@@ -179,16 +157,12 @@ fn render_bucket(b: Bucket, events: &[&TurnEvent]) -> String {
             }
         }
         Bucket::Search => {
-            // Searches collapse on raw target (query / symbol name).
             let counts = group_by_target(events);
             for (q, count, _errs) in counts {
                 out.push_str(&format!("- {} ×{}\n", q, count));
             }
         }
         Bucket::Execute | Bucket::Memory | Bucket::Other => {
-            // Fallback: show the first 5 distinct summaries verbatim,
-            // then a "+N more" line. Keeps the bucket compact even for
-            // long heterogeneous tails.
             for (shown, ev) in events.iter().enumerate() {
                 if shown >= 5 {
                     out.push_str(&format!("- (+{} more)\n", events.len() - shown));
@@ -201,8 +175,6 @@ fn render_bucket(b: Bucket, events: &[&TurnEvent]) -> String {
     out
 }
 
-/// Group `events` by their `target`, returning `(target, count, err_count)`
-/// triples sorted by count desc then target asc (for stable output).
 fn group_by_target(events: &[&TurnEvent]) -> Vec<(String, usize, usize)> {
     let mut map: BTreeMap<String, (usize, usize)> = BTreeMap::new();
     for ev in events {
@@ -288,8 +260,6 @@ mod tests {
 
     #[test]
     fn render_truncates_to_budget() {
-        // Make a noisy events vec; render with a very small budget and
-        // verify the truncation marker appears.
         let mut events = Vec::new();
         for i in 0..50 {
             events.push(ev(

@@ -1,22 +1,3 @@
-//! Pin / prefetch support for the L4 read cache.
-//!
-//! Some files are part of the agent's *startup context* and re-reading
-//! them every session burns thousands of tokens for no benefit:
-//!
-//!   * OpenClaw bundle: `MEMORY.md`, `AGENTS.md`, `SOUL.md`, `USER.md`,
-//!     `TOOLS.md`, `IDENTITY.md`, `HEARTBEAT.md`
-//!   * Claude Code bundle: `CLAUDE.md`
-//!
-//! `prefetch_pinned` resolves the user-configured filenames against the
-//! project root and a list of extra search dirs (typically
-//! `~/.openclaw`, `~/.claude`), inserts a cache row for each hit, and
-//! flips `pinned = 1`. Once pinned, the row is treated like any other
-//! cache row by the rest of the manager, except future eviction
-//! policies must skip it.
-//!
-//! This module owns *only* the pin-flag state machine; the actual
-//! cache decision pipeline lives in `lib.rs`.
-
 use std::path::{Path, PathBuf};
 
 use rusqlite::{params, OptionalExtension};
@@ -27,30 +8,20 @@ use crux_core::telemetry;
 
 use crate::ReadCacheManager;
 
-/// Outcome of a `pin` / `unpin` mutation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PinReport {
-    /// Number of cache rows whose `pinned` flag flipped.
     pub changed: usize,
-    /// Number of rows that already had the desired flag.
     pub unchanged: usize,
 }
 
-/// Outcome of a `prefetch_pinned` run.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PrefetchReport {
-    /// Files that existed on disk and were either inserted or updated.
     pub pinned: Vec<PathBuf>,
-    /// Files we looked for but didn't find under any candidate dir.
     pub missing: Vec<String>,
-    /// Bytes pre-warmed into the cache (sum of `body_size` written).
     pub bytes_cached: u64,
 }
 
 impl<'c> ReadCacheManager<'c> {
-    /// Mark an existing cache entry pinned. If the file isn't yet
-    /// cached, returns `PinReport { changed: 0, unchanged: 0 }`. Use
-    /// [`Self::prefetch_pinned`] to insert + pin in one shot.
     pub fn pin(
         &self,
         agent_id: &str,
@@ -61,8 +32,6 @@ impl<'c> ReadCacheManager<'c> {
         self.set_pinned(agent_id, session_id, project_root, file_path, true)
     }
 
-    /// Clear the pinned flag on a cache entry. No-op if the row is
-    /// missing.
     pub fn unpin(
         &self,
         agent_id: &str,
@@ -119,14 +88,6 @@ impl<'c> ReadCacheManager<'c> {
         Ok(PinReport { changed, unchanged })
     }
 
-    /// Resolve `pinned_files` (filename basenames) against the project
-    /// root + each entry of `extra_search_dirs`, insert a cache row for
-    /// every match, and flip `pinned = 1`. Repeat invocations are
-    /// idempotent — already-cached rows just have their `pinned` flag
-    /// asserted and last-access bumped, with no body re-write.
-    ///
-    /// `extra_search_dirs` are interpreted with [`expand_user_path`] so
-    /// callers can pass `"~/.openclaw"` directly.
     pub fn prefetch_pinned(
         &self,
         agent_id: &str,
@@ -140,13 +101,10 @@ impl<'c> ReadCacheManager<'c> {
             return Ok(report);
         }
 
-        // Build the search path list once: project_root + each expanded extra.
         let mut dirs: Vec<PathBuf> = Vec::with_capacity(extra_search_dirs.len() + 1);
         dirs.push(project_root.to_path_buf());
         for raw in extra_search_dirs {
             if let Some(p) = expand_user_path(raw) {
-                // Resolve project-relative search dirs against project_root
-                // so `.openclaw` finds `<project>/.openclaw`.
                 let resolved = if p.is_absolute() {
                     p
                 } else {
@@ -158,10 +116,6 @@ impl<'c> ReadCacheManager<'c> {
 
         let now_epoch = chrono::Utc::now().timestamp();
         for name in pinned_files {
-            // Defense-in-depth: refuse anything that smells like a path
-            // traversal attempt. `pinned_files` is supposed to be a list
-            // of pure basenames; complex paths would let a misconfigured
-            // entry pull in arbitrary disk content.
             if name.contains('/') || name.contains('\\') || name == ".." {
                 continue;
             }
@@ -185,8 +139,6 @@ impl<'c> ReadCacheManager<'c> {
             }
         }
 
-        // One telemetry event per prefetch invocation so dashboards can
-        // see "session warm-up cached N files / X bytes".
         if !report.pinned.is_empty() {
             let detail = format!(
                 "prefetch:{}_files,{}_bytes",
@@ -215,8 +167,6 @@ impl<'c> ReadCacheManager<'c> {
         Ok(report)
     }
 
-    /// Insert (or refresh) a pinned cache row for a known-existing file.
-    /// Returns the cached body size (0 if no body was stored).
     fn upsert_pinned_row(
         &self,
         agent_id: &str,
@@ -241,9 +191,6 @@ impl<'c> ReadCacheManager<'c> {
             .map(|m| crux_core::tokens::estimate_from_bytes(m.len()) as i64)
             .unwrap_or(0);
 
-        // Try update first (covers the idempotent re-prefetch path); if
-        // the row doesn't exist yet, fall back to insert. Two queries is
-        // simpler than a CTE here and SQLite handles both fast.
         let updated = self.conn().execute(
             "UPDATE read_cache
              SET mtime_epoch = ?, tokens_est = ?, pinned = 1,
@@ -291,8 +238,6 @@ impl<'c> ReadCacheManager<'c> {
         Ok(body_size)
     }
 
-    /// Iterate pinned cache rows for a session — useful for diagnostics
-    /// and for the future eviction policy. Returns absolute file paths.
     pub fn list_pinned(
         &self,
         agent_id: &str,
@@ -325,10 +270,6 @@ fn absolutize_pin(p: &Path) -> PathBuf {
             .unwrap_or_else(|_| p.to_path_buf())
     }
 }
-
-// ─────────────────────────────────────────────────────────────────────────
-// Tests
-// ─────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -367,7 +308,6 @@ mod tests {
         let project = tempfile::tempdir().unwrap();
         let openclaw = tempfile::tempdir().unwrap();
 
-        // File only exists in the simulated ~/.openclaw, NOT under the project.
         std::fs::write(openclaw.path().join("SOUL.md"), "soul\n").unwrap();
 
         let extras = vec![openclaw.path().to_string_lossy().to_string()];
@@ -396,7 +336,6 @@ mod tests {
             .unwrap();
         assert_eq!(r1.pinned.len(), 1);
         assert_eq!(r2.pinned.len(), 1);
-        // Still exactly one row in the table.
         assert_eq!(mgr.count().unwrap(), 1);
     }
 
@@ -408,7 +347,6 @@ mod tests {
         let p = dir.path().join("CLAUDE.md");
         std::fs::write(&p, "x\n").unwrap();
 
-        // Insert via a regular read so an entry exists.
         let ev = crate::ReadEvent {
             agent_id: "a",
             session_id: "s",
@@ -441,9 +379,6 @@ mod tests {
         let r = mgr
             .prefetch_pinned("a", "s", dir.path(), &pinned, &[])
             .unwrap();
-        // Only `ok.md` should be cached; the two malformed entries are
-        // silently skipped (and not reported as `missing`, since they're
-        // ill-formed rather than absent).
         assert_eq!(r.pinned.len(), 1);
         assert!(r.pinned[0].ends_with("ok.md"));
     }

@@ -1,9 +1,3 @@
-//! CLAUDE.md drift tracker.
-//!
-//! Goal: notice when the project's CLAUDE.md silently grows or swaps
-//! rules between sessions. We hash the file on every coach run, store
-//! a history row, and report the delta vs the most-recent prior hash.
-
 use std::path::Path;
 
 use rusqlite::{params, Connection, OptionalExtension};
@@ -23,8 +17,6 @@ impl<'c> DriftTracker<'c> {
         Self { conn }
     }
 
-    /// Read `<project>/CLAUDE.md`, hash it, append a history row when
-    /// the hash changed. Returns the comparison vs the previous entry.
     pub fn check(&self, project_root: &Path) -> Result<Option<DriftCheckResult>> {
         let path = project_root.join("CLAUDE.md");
         let bytes = match std::fs::read(&path) {

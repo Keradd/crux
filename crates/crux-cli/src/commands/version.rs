@@ -1,5 +1,3 @@
-//! `crux version` — version + build info.
-
 use anyhow::Result;
 
 use crate::Cli;

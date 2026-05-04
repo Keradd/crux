@@ -1,19 +1,7 @@
-//! Seccomp syscall filtering for `IsolationLevel::Hard`.
-//!
-//! Builds a BPF program that allows only the syscalls needed by each
-//! interpreter (Python / Bash / Node). Blocked syscalls receive `SIGSYS`
-//! rather than hard `SIGKILL`, making it easier to debug overly
-//! restrictive filters.
-//!
-//! Linux-only; guarded by `#[cfg(feature = "seccomp")]`.
-
 use std::io;
 
 use crate::types::RuntimeKind;
 
-// ── x86_64 syscall numbers ────────────────────────────────────────────
-
-// File I/O
 const SYS_READ: u32 = 0;
 const SYS_WRITE: u32 = 1;
 const SYS_OPEN: u32 = 2;
@@ -36,14 +24,12 @@ const SYS_FACCESSAT: u32 = 269;
 const SYS_READLINK: u32 = 89;
 const SYS_READLINKAT: u32 = 267;
 
-// Memory
 const SYS_MMAP: u32 = 9;
 const SYS_MPROTECT: u32 = 10;
 const SYS_MUNMAP: u32 = 11;
 const SYS_BRK: u32 = 12;
 const SYS_MREMAP: u32 = 25;
 
-// Process / identity
 const SYS_GETPID: u32 = 39;
 const SYS_GETUID: u32 = 102;
 const SYS_GETGID: u32 = 104;
@@ -57,7 +43,6 @@ const SYS_WAIT4: u32 = 61;
 const SYS_SCHED_YIELD: u32 = 24;
 const SYS_CLONE: u32 = 56;
 
-// Signals
 const SYS_RT_SIGACTION: u32 = 13;
 const SYS_RT_SIGPROCMASK: u32 = 14;
 const SYS_RT_SIGRETURN: u32 = 15;
@@ -66,13 +51,11 @@ const SYS_KILL: u32 = 62;
 const SYS_TKILL: u32 = 200;
 const SYS_RT_SIGSUSPEND: u32 = 130;
 
-// Time
 const SYS_CLOCK_GETTIME: u32 = 228;
 const SYS_CLOCK_GETRES: u32 = 229;
 const SYS_GETTIMEOFDAY: u32 = 96;
 const SYS_NANOSLEEP: u32 = 35;
 
-// Misc
 const SYS_IOCTL: u32 = 16;
 const SYS_GETRANDOM: u32 = 318;
 const SYS_STATX: u32 = 332;
@@ -92,7 +75,6 @@ const SYS_SYSINFO: u32 = 99;
 const SYS_TIMES: u32 = 100;
 const SYS_UNAME: u32 = 63;
 
-// Bash-specific
 const SYS_PIPE2: u32 = 293;
 const SYS_DUP3: u32 = 292;
 const SYS_EXECVE: u32 = 59;
@@ -106,11 +88,9 @@ const SYS_SETGID: u32 = 106;
 const SYS_SETEUID: u32 = 145;
 const SYS_SETEGID: u32 = 146;
 
-// Python-specific
 const SYS_GETPRIORITY: u32 = 140;
 const SYS_SETPRIORITY: u32 = 141;
 
-// Node-specific
 const SYS_EPOLL_CREATE1: u32 = 291;
 const SYS_EPOLL_CTL: u32 = 233;
 const SYS_EPOLL_WAIT: u32 = 232;
@@ -141,8 +121,6 @@ const SYS_SOCKETPAIR: u32 = 53;
 const SYS_CLONE3: u32 = 435;
 const SYS_CLOSE_RANGE: u32 = 436;
 
-// ── Always-blocked syscalls ────────────────────────────────────────────
-
 const BLOCKED_SYSCALLS: &[u32] = &[
     101, // ptrace
     165, // mount
@@ -160,8 +138,6 @@ const BLOCKED_SYSCALLS: &[u32] = &[
     103, // syslog
     317, // seccomp (prevent child from modifying its own filter)
 ];
-
-// ── Common allowlist (all interpreters) ────────────────────────────────
 
 const COMMON_SYSCALLS: &[u32] = &[
     SYS_READ,
@@ -230,8 +206,6 @@ const COMMON_SYSCALLS: &[u32] = &[
     SYS_PRCTL,
 ];
 
-// ── Runtime-specific additions ─────────────────────────────────────────
-
 const PYTHON_EXTRA: &[u32] = &[
     SYS_OPENAT,
     SYS_NEWFSTATAT,
@@ -292,8 +266,6 @@ const NODE_EXTRA: &[u32] = &[
     SYS_CLOSE_RANGE,
 ];
 
-// ── BPF constants ─────────────────────────────────────────────────────
-
 const BPF_LD: u16 = 0x00;
 const BPF_W: u16 = 0x00;
 const BPF_ABS: u16 = 0x20;
@@ -305,10 +277,7 @@ const BPF_RET: u16 = 0x06;
 const SECCOMP_RET_ALLOW: u32 = 0x7fff0000;
 const SECCOMP_RET_TRAP: u32 = 0x00030000;
 
-/// Offset of `seccomp_data.nr` (the syscall number) in the struct.
 const SECCOMP_DATA_NR_OFFSET: u32 = 0;
-
-// ── BPF instruction ───────────────────────────────────────────────────
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -329,12 +298,9 @@ struct sock_fprog {
 unsafe impl Send for sock_filter {}
 unsafe impl Sync for sock_filter {}
 
-/// Build a BPF program that allows the given syscalls and traps on
-/// everything else.
 fn build_bpf_filter(allowed: &[u32]) -> Vec<sock_filter> {
     let mut prog: Vec<sock_filter> = Vec::new();
 
-    // Load syscall number: LD [nr]
     prog.push(sock_filter {
         code: BPF_LD | BPF_W | BPF_ABS,
         jt: 0,
@@ -342,10 +308,8 @@ fn build_bpf_filter(allowed: &[u32]) -> Vec<sock_filter> {
         k: SECCOMP_DATA_NR_OFFSET,
     });
 
-    // For each allowed syscall: if nr == sysno → ALLOW
     for (i, &sysno) in allowed.iter().enumerate() {
         let remaining = allowed.len() - i - 1;
-        // Jump to ALLOW if match, fall through to next check if not.
         prog.push(sock_filter {
             code: BPF_JMP | BPF_JEQ | BPF_K,
             jt: 0,
@@ -354,7 +318,6 @@ fn build_bpf_filter(allowed: &[u32]) -> Vec<sock_filter> {
         });
     }
 
-    // Default: TRAP
     prog.push(sock_filter {
         code: BPF_RET | BPF_K,
         jt: 0,
@@ -362,7 +325,6 @@ fn build_bpf_filter(allowed: &[u32]) -> Vec<sock_filter> {
         k: SECCOMP_RET_TRAP,
     });
 
-    // ALLOW target (jumped to by matching entries)
     prog.push(sock_filter {
         code: BPF_RET | BPF_K,
         jt: 0,
@@ -373,41 +335,28 @@ fn build_bpf_filter(allowed: &[u32]) -> Vec<sock_filter> {
     prog
 }
 
-/// Install a seccomp BPF filter for the given runtime.
-///
-/// Must be called inside a `pre_exec` hook (after fork, before exec).
-/// Returns `Ok(())` on success, or an `io::Error` if the kernel rejects
-/// the filter.
 pub fn install_seccomp_filter(runtime: RuntimeKind) -> io::Result<()> {
-    // 1. Set PR_SET_NO_NEW_PRIVS (required for unprivileged seccomp).
     let rc = unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
     if rc != 0 {
         return Err(io::Error::last_os_error());
     }
 
-    // 2. Build the allowlist for this runtime.
     let mut allowed: Vec<u32> = COMMON_SYSCALLS.to_vec();
     match runtime {
         RuntimeKind::Python => allowed.extend_from_slice(PYTHON_EXTRA),
         RuntimeKind::Bash => allowed.extend_from_slice(BASH_EXTRA),
         RuntimeKind::Node => allowed.extend_from_slice(NODE_EXTRA),
     }
-    // Remove any accidentally-included blocked syscalls.
     allowed.retain(|s| !BLOCKED_SYSCALLS.contains(s));
     allowed.sort_unstable();
     allowed.dedup();
 
-    // 3. Build the BPF program.
     let filter = build_bpf_filter(&allowed);
     let prog = sock_fprog {
         len: filter.len() as u16,
         filter: filter.as_ptr(),
     };
 
-    // 4. Install via the seccomp() syscall.
-    //    SYS_seccomp = 317 on x86_64.
-    //    SECCOMP_SET_MODE_FILTER = 1
-    //    SECCOMP_FILTER_FLAG_LOG = 1 (log blocked calls to audit)
     const SYS_SECCOMP: libc::c_long = 317;
     const SECCOMP_SET_MODE_FILTER: libc::c_ulong = 1;
     const SECCOMP_FILTER_FLAG_LOG: libc::c_ulong = 1;
@@ -471,7 +420,6 @@ mod tests {
     fn bpf_filter_default_is_trap() {
         let allowed = vec![0, 1, 2];
         let prog = build_bpf_filter(&allowed);
-        // Second-to-last should be the TRAP fallthrough.
         let trap = &prog[prog.len() - 2];
         assert_eq!(trap.k, SECCOMP_RET_TRAP, "default branch must be TRAP");
     }
@@ -480,7 +428,6 @@ mod tests {
     fn bpf_filter_length_matches_syscalls() {
         let allowed = vec![0, 1, 2, 3, 4];
         let prog = build_bpf_filter(&allowed);
-        // 1 (LD) + 5 (JEQ checks) + 1 (TRAP) + 1 (ALLOW) = 8
         assert_eq!(prog.len(), 1 + allowed.len() + 2);
     }
 }

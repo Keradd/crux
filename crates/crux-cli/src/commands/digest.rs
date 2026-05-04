@@ -1,11 +1,3 @@
-//! `crux digest` / `crux compact` — Layer 11 surface.
-//!
-//! - `crux digest`  renders the most recent rollup + still-pending events
-//!   for a session. Falls back to the live pending-event view if no
-//!   digest exists yet.
-//! - `crux compact` forces an immediate rollup, optionally marking the
-//!   resulting digest as an L8 observation.
-
 use anyhow::{Context, Result};
 use clap::Args as ClapArgs;
 
@@ -19,28 +11,21 @@ const DEFAULT_SESSION: &str = "default";
 
 #[derive(Debug, ClapArgs)]
 pub struct DigestArgs {
-    /// Session id to render. Defaults to the `CRUX_SESSION` env var,
-    /// then to `default`.
     #[arg(long, env = "CRUX_SESSION")]
     pub session: Option<String>,
 
-    /// Show pending events only (skip the latest rollup).
     #[arg(long)]
     pub pending: bool,
 
-    /// List recent digests for the project instead of rendering one
-    /// session. Useful for `crux digest --history --limit 5`.
     #[arg(long)]
     pub history: bool,
 
-    /// Limit applied to `--history` output.
     #[arg(long, default_value_t = 10)]
     pub limit: usize,
 }
 
 #[derive(Debug, ClapArgs)]
 pub struct CompactArgs {
-    /// Session id to compact. Defaults to `CRUX_SESSION`, then `default`.
     #[arg(long, env = "CRUX_SESSION")]
     pub session: Option<String>,
 }

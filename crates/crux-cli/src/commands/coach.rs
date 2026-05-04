@@ -1,5 +1,3 @@
-//! `crux coach` — Layer 9 health snapshot + loop-check + drift-check.
-
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -16,24 +14,15 @@ use crate::Cli;
 
 #[derive(Debug, Subcommand)]
 pub enum Cmd {
-    /// Print current health score + patterns (default when no sub given).
     Snapshot(SnapshotArgs),
-    /// Persist the snapshot to `quality_scores` so history grows.
     Record(SnapshotArgs),
-    /// Check a session for repetition / loops via token Jaccard.
     Loop(LoopArgs),
-    /// Check CLAUDE.md for drift vs last session.
     Drift,
-    /// Audit an OpenClaw directory (port of alex/token-optimizer's
-    /// context-audit). Reports per-component token cost +
-    /// actionable trim/archive/disable recommendations.
     Openclaw(OpenclawArgs),
 }
 
 #[derive(Debug, Default, ClapArgs)]
 pub struct OpenclawArgs {
-    /// OpenClaw directory to audit. Defaults to `~/.openclaw`, then
-    /// `<project>/.openclaw` if the home dir is missing.
     #[arg(long)]
     pub dir: Option<PathBuf>,
 }
@@ -52,7 +41,6 @@ pub struct LoopArgs {
     pub user: String,
     #[arg(long, default_value = "")]
     pub tool: String,
-    /// Clear loop state for this session first.
     #[arg(long)]
     pub reset: bool,
 }
@@ -248,9 +236,6 @@ fn openclaw_audit(cli: &Cli, args: &OpenclawArgs) -> Result<()> {
     Ok(())
 }
 
-/// Resolve the OpenClaw directory: explicit `--dir` first, then
-/// `~/.openclaw`, then `<project>/.openclaw`. Returns the first
-/// existing directory.
 fn resolve_openclaw_dir(cli: &Cli, args: &OpenclawArgs) -> Result<PathBuf> {
     if let Some(p) = &args.dir {
         if p.is_dir() {

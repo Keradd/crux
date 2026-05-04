@@ -1,15 +1,3 @@
-//! TOML configuration for CRUX.
-//!
-//! Two scopes:
-//! - **Global**: `~/.crux/config.toml` (or `$CRUX_HOME/config.toml`)
-//! - **Project**: `<project>/.crux/config.toml`
-//!
-//! Project values override global. Missing fields fall back to baked-in
-//! defaults from [`Config::default`].
-//!
-//! Configuration design choices and the matrix of layer modes are described
-//! in `docs/CRUX-DESIGN.md` Section 6.
-
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -17,10 +5,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{CruxError, Result};
 use crate::paths;
-
-// ─────────────────────────────────────────────────────────────────────────
-// Top-level Config
-// ─────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -32,23 +16,15 @@ pub struct Config {
     pub layer: LayerConfigs,
     pub telemetry: TelemetryConfig,
     pub mcp: McpConfig,
-    /// Patterns for `.contextignore`-style ignore (project-only typically).
     #[serde(default)]
     pub ignore: IgnoreConfig,
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// General
-// ─────────────────────────────────────────────────────────────────────────
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct GeneralConfig {
-    /// Override DB path. `None` resolves to `<crux_home>/db/crux.sqlite`.
     pub db_path: Option<PathBuf>,
-    /// Override log file path. `None` resolves to `<crux_home>/logs/crux.log`.
     pub log_path: Option<PathBuf>,
-    /// Log level: error/warn/info/debug/trace.
     pub log_level: String,
 }
 
@@ -62,10 +38,6 @@ impl Default for GeneralConfig {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// Layer toggles (which layers are active)
-// ─────────────────────────────────────────────────────────────────────────
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct LayerToggles {
@@ -75,19 +47,10 @@ pub struct LayerToggles {
     pub l4_read_cache: bool,
     pub l5_ast_graph: bool,
     pub l6_hybrid_search: bool,
-    /// Sandbox on-by-default as of 2026-05-03. The default isolation
-    /// level is `IsolationLevel::Portable` (subprocess + timeout +
-    /// `network_allowed=false` + project-root-only fs) which is safe
-    /// without any system-level dependency. Users who want stronger
-    /// isolation compile `crux-l7-sandbox` with the `seccomp` feature
-    /// and pass `"isolation":"hard"` per-call.
     pub l7_sandbox: bool,
     pub l8_memory: bool,
     pub l9_coach: bool,
     pub l10_setup: bool,
-    /// Layer 11 — conversation digest. Records every tool call as a
-    /// `turn_event` and rolls them up into compact `turn_digests` so
-    /// long sessions don't drag historical noise into context.
     pub l11_digest: bool,
 }
 
@@ -109,20 +72,13 @@ impl Default for LayerToggles {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// Layer modes (warn / block / shadow)
-// ─────────────────────────────────────────────────────────────────────────
-
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 #[derive(Default)]
 pub enum LayerMode {
-    /// Layer runs but only logs telemetry; never blocks the agent.
     #[default]
     Warn,
-    /// Layer can short-circuit the agent (e.g., return digest instead of file).
     Block,
-    /// Layer is fully disabled but still records telemetry as if it had run.
     Shadow,
 }
 
@@ -132,10 +88,6 @@ pub struct LayerModes {
     pub l3_bash_filter: LayerMode,
     pub l4_read_cache: LayerMode,
 }
-
-// ─────────────────────────────────────────────────────────────────────────
-// Per-layer detailed configs
-// ─────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default)]
@@ -175,25 +127,10 @@ pub struct L4Config {
     pub delta_max_lines: u64,
     pub cache_max_entries: u64,
     pub contextignore_max_patterns: u64,
-    /// Threshold in lines above which a full-file read auto-falls back
-    /// to an L5 outline (symbol list + line ranges) instead of the
-    /// whole body. `0` disables the behavior. Only fires when the
-    /// caller asks for the full file (no offset/limit/symbol) AND the
-    /// L5 graph has indexed at least one symbol for the file. Agents
-    /// can opt out per-call via `force_full = true`.
     pub outline_above_lines: u64,
 
-    /// File **basenames** that should be auto-prefetched on session
-    /// start and never evicted. Default set covers the OpenClaw /
-    /// Claude Code memory bundle (`MEMORY.md`, `AGENTS.md`, `SOUL.md`,
-    /// `USER.md`, `TOOLS.md`, `CLAUDE.md`, `IDENTITY.md`,
-    /// `HEARTBEAT.md`). Override with the full list you want — empty
-    /// `[]` disables pinning entirely.
     pub pinned_files: Vec<String>,
 
-    /// Extra directories (in addition to the project root) to scan when
-    /// resolving `pinned_files`. Tilde / `$HOME` are expanded by the
-    /// caller. Default points at the standard agent-config dirs.
     pub pinned_search_dirs: Vec<String>,
 }
 
@@ -277,10 +214,6 @@ pub struct L6Config {
 
 impl Default for L6Config {
     fn default() -> Self {
-        // Defaults match what ships in the zero-deps build: a hash-based
-        // baseline embedder so the dense path always works without a
-        // network or extra runtime. Switch to `fastembed` after building
-        // with `--features crux-l6-search/fastembed`.
         Self {
             embedding_provider: "hash".into(),
             embedding_model: "hash-256".into(),
@@ -326,12 +259,7 @@ pub struct L8Config {
     pub auto_extract: bool,
     pub decay_check_interval_hours: u64,
     pub contradiction_check: bool,
-    /// When true, `crux_read` / `crux_get_symbol_source` append a short
-    /// footer listing past observations attached to the file/symbol they
-    /// return. Zero new tool calls; pure context injection.
     pub auto_surface: bool,
-    /// Cap on observations surfaced per call. Keep small (≤ 5) so the
-    /// footer never dominates the payload.
     pub auto_surface_limit: usize,
 }
 
@@ -370,17 +298,10 @@ impl Default for L9Config {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct L11Config {
-    /// Auto-compact a session after this many pending events. `0`
-    /// disables auto-compaction; manual `crux compact` still works.
     pub auto_compact_every_n: u32,
-    /// Soft cap on summary tokens written into a digest row.
     pub max_summary_tokens: u32,
-    /// When true, every compaction also writes the digest summary
-    /// into the L8 `observations` table as a `convention` row.
     pub mirror_to_l8: bool,
-    /// Importance assigned to mirrored observations (1..=10).
     pub mirror_importance: u8,
-    /// Cap on events read in a single `summarize` call.
     pub render_max_events: u32,
 }
 
@@ -395,10 +316,6 @@ impl Default for L11Config {
         }
     }
 }
-
-// ─────────────────────────────────────────────────────────────────────────
-// Telemetry / MCP / ignore
-// ─────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -419,7 +336,6 @@ impl Default for TelemetryConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct McpConfig {
-    /// "stdio" or "host:port". Defaults to stdio for safety.
     pub listen_addr: String,
 }
 
@@ -437,14 +353,6 @@ pub struct IgnoreConfig {
     pub patterns: Vec<String>,
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// Loading + saving
-// ─────────────────────────────────────────────────────────────────────────
-
-/// Resolve effective config: defaults → global TOML → project TOML.
-///
-/// Either or both files may be missing; defaults are always available.
-/// Returns the merged config plus the paths that were consulted.
 pub struct LoadedConfig {
     pub config: Config,
     pub global_path: PathBuf,
@@ -473,7 +381,6 @@ pub fn load(project_root: Option<&Path>) -> Result<LoadedConfig> {
     })
 }
 
-/// Persist a config to a path, creating parent directories.
 pub fn save(cfg: &Config, path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| CruxError::Io {
@@ -500,13 +407,6 @@ fn read_toml(path: &Path) -> Result<PartialConfig> {
     })?;
     Ok(parsed)
 }
-
-// ─────────────────────────────────────────────────────────────────────────
-// Partial / merge
-//
-// We use a fully-optional mirror of `Config` so that a project file can
-// override only the fields it cares about without nuking unrelated sections.
-// ─────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Default, Deserialize)]
 struct PartialConfig {
@@ -546,10 +446,6 @@ impl PartialConfig {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// Tests
-// ─────────────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -564,8 +460,6 @@ mod tests {
 
     #[test]
     fn project_overrides_global() {
-        // Project config explicitly disables L7 — this must win over the
-        // default-on state.
         let dir = tempfile::tempdir().unwrap();
         let proj = dir.path();
         let proj_cfg_path = proj.join(".crux").join("config.toml");

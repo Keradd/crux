@@ -1,12 +1,3 @@
-//! Built-in Layer 1 profiles (output-compression rules).
-//!
-//! These are baked into the binary so `crux init --profile coding` works
-//! offline. Future versions will support overlay profiles in
-//! `~/.config/crux/profiles/<name>.toml`.
-//!
-//! Sources for the rule wording: drona23/claude-token-efficient and
-//! juliusbrussee/caveman, with adjustments for CRUX terminology.
-
 #[derive(Debug, Clone, Copy)]
 pub struct Profile {
     pub name: &'static str,

@@ -1,29 +1,4 @@
 //! Render L8 memory as a `MEMORY.md` markdown view that OpenClaw /
-//! Claude Code can pick up at startup.
-//!
-//! Direction is **uni**directional: L8 (sqlite observations) is the
-//! source of truth, `MEMORY.md` is a generated read-only mirror.
-//!
-//! ```text
-//! ┌────────────┐    crux remember    ┌───────────┐
-//! │ L8 sqlite  │  ◀────────────────  │ user / AI │
-//! └─────┬──────┘                      └───────────┘
-//!       │ render_memory_md
-//!       ▼
-//! ┌────────────────┐    OpenClaw / Claude Code reads at startup
-//! │   MEMORY.md    │ ───────────────────────────────────────────►
-//! │ (generated)    │
-//! └────────────────┘
-//! ```
-//!
-//! Hand edits to `MEMORY.md` are silently overwritten on the next
-//! export. The file always carries a banner saying so.
-//!
-//! Public surface:
-//! - [`render_memory_md`] — pure function, given observations + ctx
-//! - [`export_memory_md`] — load active observations + render + atomic
-//!   write to disk
-//! - [`ExportReport`] — outcome of an export call
 
 use std::fs;
 use std::io::Write;
@@ -72,9 +47,7 @@ pub struct ExportOptions {
     pub force: bool,
 }
 
-// ─────────────────────────────────────────────────────────────────────────
 // Pure render
-// ─────────────────────────────────────────────────────────────────────────
 
 /// Render observations as a fully-formed `MEMORY.md` document.
 ///
@@ -237,9 +210,7 @@ fn sanitize_title(t: &str) -> String {
     t.replace(['\n', '\r'], " ").trim().to_string()
 }
 
-// ─────────────────────────────────────────────────────────────────────────
 // Disk I/O
-// ─────────────────────────────────────────────────────────────────────────
 
 /// Pull active observations for `project_root` from L8 and write a
 /// rendered `MEMORY.md` to `target`. Atomic via `tmp + rename`. Refuses
@@ -350,9 +321,7 @@ fn sibling_tmp_path(target: &Path) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(tmp_name))
 }
 
-// ─────────────────────────────────────────────────────────────────────────
 // Tests
-// ─────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

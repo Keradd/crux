@@ -1,6 +1,5 @@
 # OpenClaw CLI — status, logs, mcp inspection.
 #
-# Goal: collapse the verbose, banner-heavy output that `openclaw status` and
 # friends emit (boxes, ANSI, absolute paths, repeated headers) into the
 # *signal* an agent actually needs: counts, names, health, errors.
 #
