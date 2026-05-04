@@ -93,6 +93,8 @@ enum Cmd {
 
     #[command(subcommand)]
     Hygiene(commands::hygiene::Cmd),
+
+    Build(commands::build::Args),
 }
 
 fn main() -> ExitCode {
@@ -142,5 +144,6 @@ fn dispatch(cli: &Cli) -> anyhow::Result<()> {
         Cmd::Compact(a) => commands::digest::run_compact(cli, a),
         Cmd::Humanize(a) => commands::humanize::run(cli, a),
         Cmd::Hygiene(c) => commands::hygiene::run(cli, c),
+        Cmd::Build(a) => commands::build::run(cli, a),
     }
 }

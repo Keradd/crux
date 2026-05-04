@@ -1,6 +1,7 @@
 pub mod ast;
 pub mod audit;
 pub mod bash;
+pub mod build;
 pub mod coach;
 pub mod config;
 pub mod digest;
