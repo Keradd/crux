@@ -6,6 +6,7 @@ pub mod merkle;
 pub mod paths;
 pub mod telemetry;
 pub mod tokens;
+pub mod walk;
 
 pub use config::{Config, LayerMode, LoadedConfig};
 pub use config_watch::{ConfigWatcher, WatcherHandle, DEFAULT_POLL_INTERVAL};

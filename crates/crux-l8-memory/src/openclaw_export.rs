@@ -248,11 +248,7 @@ fn write_atomically(
                         refused_due_to_handwritten: true,
                     });
                 }
-                if existing == body {
-                    // Same content — skip the disk churn. Important for
-                    // any debounced caller (e.g., a memory-watch loop)
-                    // that wants to call `export` after every `remember`
-                    // without thrashing mtime.
+                if bodies_equal_ignoring_timestamp(&existing, body) {
                     return Ok(ExportReport {
                         target: target.to_path_buf(),
                         observations_rendered,
@@ -307,6 +303,17 @@ fn write_atomically(
         unchanged: false,
         refused_due_to_handwritten: false,
     })
+}
+
+fn bodies_equal_ignoring_timestamp(a: &str, b: &str) -> bool {
+    strip_generated_line(a) == strip_generated_line(b)
+}
+
+fn strip_generated_line(s: &str) -> String {
+    s.lines()
+        .filter(|l| !l.starts_with("_Generated "))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn sibling_tmp_path(target: &Path) -> PathBuf {
@@ -427,6 +434,22 @@ mod tests {
         let r2 = export_memory_md(&mem, project(), &target, &ExportOptions::default()).unwrap();
         assert!(r2.unchanged, "second export must be a no-op (debounce)");
         assert!(!r2.refused_due_to_handwritten);
+    }
+
+    #[test]
+    fn unchanged_detection_ignores_generated_timestamp_drift() {
+        let a = format!(
+            "{GENERATED_HEADER}\n# Memory\n\n_Generated 2026-05-05 02:00:00Z — 1 observation from `x`._\n\nbody\n"
+        );
+        let b = format!(
+            "{GENERATED_HEADER}\n# Memory\n\n_Generated 2026-05-05 02:59:59Z — 1 observation from `x`._\n\nbody\n"
+        );
+        assert!(bodies_equal_ignoring_timestamp(&a, &b));
+
+        let c = format!(
+            "{GENERATED_HEADER}\n# Memory\n\n_Generated 2026-05-05 02:00:00Z — 1 observation from `x`._\n\nDIFFERENT\n"
+        );
+        assert!(!bodies_equal_ignoring_timestamp(&a, &c));
     }
 
     #[test]

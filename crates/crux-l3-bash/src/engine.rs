@@ -163,6 +163,20 @@ mod tests {
     }
 
     #[test]
+    fn git_log_oneline_picks_narrow_filter() {
+        let e = FilterEngine::builtin().unwrap();
+        let r = e.process("git log --oneline", "abc feat\ndef fix\n");
+        assert_eq!(r.filter_name.as_deref(), Some("git-log-oneline"));
+    }
+
+    #[test]
+    fn git_log_plain_picks_verbose_filter() {
+        let e = FilterEngine::builtin().unwrap();
+        let r = e.process("git log", "commit abc\n\n    msg\n");
+        assert_eq!(r.filter_name.as_deref(), Some("git-log-verbose"));
+    }
+
+    #[test]
     fn add_from_str_then_dispatch() {
         let mut e = FilterEngine::empty();
         e.add_from_str(

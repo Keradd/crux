@@ -261,14 +261,14 @@ fn walk(
             Some(n) => n.to_string(),
             None => continue,
         };
-        if name.starts_with('.') || name == "target" || name == "node_modules" {
-            continue;
-        }
         let ft = match entry.file_type() {
             Ok(f) => f,
             Err(_) => continue,
         };
         if ft.is_dir() {
+            if name.starts_with('.') || crux_core::walk::is_excluded_dir(&name) {
+                continue;
+            }
             walk(root, &path, project_key, only, out)?;
             continue;
         }
@@ -320,14 +320,14 @@ fn list_prose_walk(root: &Path, dir: &Path, out: &mut Vec<String>) -> Result<()>
             Some(n) => n.to_string(),
             None => continue,
         };
-        if name.starts_with('.') || name == "target" || name == "node_modules" {
-            continue;
-        }
         let ft = match entry.file_type() {
             Ok(f) => f,
             Err(_) => continue,
         };
         if ft.is_dir() {
+            if name.starts_with('.') || crux_core::walk::is_excluded_dir(&name) {
+                continue;
+            }
             list_prose_walk(root, &path, out)?;
             continue;
         }

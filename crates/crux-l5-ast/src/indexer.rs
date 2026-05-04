@@ -61,6 +61,14 @@ pub fn index_project_with(
     for entry in WalkBuilder::new(project_root)
         .standard_filters(true)
         .hidden(false)
+        .filter_entry(|entry| {
+            let name = match entry.file_name().to_str() {
+                Some(n) => n,
+                None => return true,
+            };
+            let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            !(is_dir && crux_core::walk::is_excluded_dir(name))
+        })
         .build()
         .flatten()
     {
@@ -256,6 +264,51 @@ fn hash_hex(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn skips_node_modules_and_target_by_default() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::create_dir_all(dir.path().join("node_modules/router")).unwrap();
+        std::fs::create_dir_all(dir.path().join("target/debug")).unwrap();
+        std::fs::create_dir_all(dir.path().join("dist")).unwrap();
+        std::fs::write(
+            dir.path().join("src/lib.rs"),
+            "pub fn keep_me() -> i32 { 1 }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("node_modules/router/index.js"),
+            "function nodeDepSymbol() { return 1; }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("target/debug/artifact.rs"),
+            "pub fn build_artifact_symbol() -> i32 { 2 }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("dist/bundle.js"),
+            "function bundleSymbol() { return 3; }\n",
+        )
+        .unwrap();
+
+        let conn = crux_core::db::open_in_memory().unwrap();
+        index_project(&conn, dir.path()).unwrap();
+
+        let store = GraphStore::new(&conn);
+        let key = dir.path().to_string_lossy().to_string();
+        assert!(
+            !store.find_symbol(&key, "keep_me", None).unwrap().is_empty(),
+            "project source file must be indexed"
+        );
+        for dep in &["nodeDepSymbol", "build_artifact_symbol", "bundleSymbol"] {
+            assert!(
+                store.find_symbol(&key, dep, None).unwrap().is_empty(),
+                "symbol from excluded dir must NOT be indexed: {dep}"
+            );
+        }
+    }
 
     #[test]
     fn indexes_rust_project() {

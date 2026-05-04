@@ -46,6 +46,17 @@ head_lines     = 30
 tail_lines     = 5
 max_lines      = 60
 
+# ── git log (verbose, non-oneline) ──
+# Filters are tried alphabetically inside a TOML file; keep this name
+# AFTER `git-log-oneline` so `git log --oneline` hits the narrower rule.
+[filters.git-log-verbose]
+description    = "Cap verbose `git log` output; keep recent commits."
+match_command  = "^git\\s+log(\\s|$)"
+strip_ansi     = true
+head_lines     = 80
+tail_lines     = 5
+max_lines      = 120
+
 # ── git branch ──
 [filters.git-branch]
 description       = "Pass-through with reasonable cap."
@@ -67,6 +78,18 @@ name     = "git_status_clean"
 filter   = "git-status"
 input    = "On branch main\nYour branch is up to date with 'origin/main'.\n\nnothing to commit, working tree clean\n"
 expected = "git status: clean"
+
+[[tests]]
+name     = "git_log_oneline_wins_over_verbose"
+filter   = "git-log-oneline"
+input    = "abc123 feat\ndef456 fix\n"
+expected = "abc123 feat\ndef456 fix"
+
+[[tests]]
+name     = "git_log_verbose_caps"
+filter   = "git-log-verbose"
+input    = "commit abc\n\n    msg line\n"
+expected = "commit abc\n\n    msg line"
 
 [[tests]]
 name     = "git_status_with_changes"

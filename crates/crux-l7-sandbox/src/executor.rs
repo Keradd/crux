@@ -9,7 +9,7 @@ use crux_core::error::{CruxError, Result};
 use crate::permissions::PermDecision;
 use crate::types::{ExecRequest, ExecResult, IsolationLevel, RuntimeKind};
 
-const ALLOWED_ENV_KEYS: &[&str] = &["PATH", "HOME", "LANG", "TZ"];
+const ALLOWED_ENV_KEYS: &[&str] = &["PATH", "LANG", "TZ"];
 
 pub struct Executor;
 
@@ -437,6 +437,33 @@ mod tests {
         let res = exec.execute(&req).unwrap();
         std::env::remove_var("CRUX_TEST_LEAK");
         assert!(res.stdout.contains("MISSING"));
+    }
+
+    #[test]
+    fn home_does_not_leak_without_inherit_env() {
+        if !require_bash() {
+            return;
+        }
+        let exec = Executor::new();
+        let req = ExecRequest::new(RuntimeKind::Bash, "echo \"HOME=${HOME:-MISSING}\"");
+        let res = exec.execute(&req).unwrap();
+        assert!(
+            res.stdout.contains("HOME=MISSING"),
+            "HOME must not pass through by default, got stdout: {}",
+            res.stdout
+        );
+    }
+
+    #[test]
+    fn explicit_env_entry_still_passes_home() {
+        if !require_bash() {
+            return;
+        }
+        let exec = Executor::new();
+        let mut req = ExecRequest::new(RuntimeKind::Bash, "echo \"HOME=${HOME:-MISSING}\"");
+        req.env.insert("HOME".into(), "/tmp/custom-home".into());
+        let res = exec.execute(&req).unwrap();
+        assert!(res.stdout.contains("HOME=/tmp/custom-home"));
     }
 
     #[test]

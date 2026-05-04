@@ -74,11 +74,21 @@ pub fn run(cli: &Cli, args: &Args) -> Result<()> {
 
 fn read_input(args: &Args) -> Result<String> {
     if let Some(s) = &args.input {
+        if s == "-" {
+            return read_stdin();
+        }
         return Ok(s.clone());
     }
     if let Some(p) = &args.file {
+        if p.as_os_str() == "-" {
+            return read_stdin();
+        }
         return std::fs::read_to_string(p).with_context(|| format!("read {}", p.display()));
     }
+    read_stdin()
+}
+
+fn read_stdin() -> Result<String> {
     let mut buf = String::new();
     std::io::stdin()
         .read_to_string(&mut buf)
@@ -101,5 +111,32 @@ mod tests {
             let parsed = Mode::from_str(m.as_str()).expect("known mode");
             assert_eq!(parsed, *m);
         }
+    }
+
+    #[test]
+    fn inline_input_returned_literally() {
+        let args = Args {
+            mode: "concise".into(),
+            input: Some("literal text".into()),
+            file: None,
+            stats: false,
+        };
+        let got = read_input(&args).unwrap();
+        assert_eq!(got, "literal text");
+    }
+
+    #[test]
+    fn file_input_reads_contents() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("in.txt");
+        std::fs::write(&p, "from file").unwrap();
+        let args = Args {
+            mode: "concise".into(),
+            input: None,
+            file: Some(p),
+            stats: false,
+        };
+        let got = read_input(&args).unwrap();
+        assert_eq!(got, "from file");
     }
 }
