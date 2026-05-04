@@ -28,24 +28,16 @@ MCP server pointed at the current directory.
 
 ## Prebuilt binaries
 
-Tagged releases ship statically-linked binaries on the
-[GitHub Releases](https://github.com/Keradd/crux/releases) page:
+Not shipped for v0.4.0 — releases are **source-only** while CRUX is
+still pre-1.0. The
+[GitHub Releases](https://github.com/Keradd/crux/releases) page
+carries the signed tag and the CHANGELOG excerpt only; no tarballs
+or `.sha256` checksums are uploaded.
 
-- Linux x86_64 (`gnu` + `musl`)
-- Linux aarch64 (`gnu` + `musl`)
-- macOS x86_64 + aarch64 (Apple Silicon)
-- Windows x86_64
-
-Each archive ships with a `.sha256` checksum next to it.
-
-```bash
-TAG=v0.4.0
-curl -L -o crux.tar.gz \
-  "https://github.com/Keradd/crux/releases/download/${TAG}/crux-${TAG}-x86_64-unknown-linux-gnu.tar.gz"
-tar -xzf crux.tar.gz
-sudo install crux /usr/local/bin/
-crux --help
-```
+Use the one-shot installer above or the [from-source](#from-source)
+path below. A cross-platform binary matrix can be reinstated later
+by restoring the `upload-assets` job in
+`.github/workflows/release.yml`.
 
 ## From source
 
