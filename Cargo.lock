@@ -472,6 +472,7 @@ dependencies = [
  "chrono",
  "clap",
  "crux-core",
+ "crux-humanizer",
  "crux-l10-setup",
  "crux-l11-digest",
  "crux-l12-hygiene",
@@ -507,6 +508,16 @@ dependencies = [
  "thiserror 1.0.69",
  "toml",
  "tracing",
+]
+
+[[package]]
+name = "crux-humanizer"
+version = "0.3.0"
+dependencies = [
+ "crux-core",
+ "regex",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

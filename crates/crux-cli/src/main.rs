@@ -89,6 +89,8 @@ enum Cmd {
 
     Compact(commands::digest::CompactArgs),
 
+    Humanize(commands::humanize::Args),
+
     #[command(subcommand)]
     Hygiene(commands::hygiene::Cmd),
 }
@@ -138,6 +140,7 @@ fn dispatch(cli: &Cli) -> anyhow::Result<()> {
         Cmd::Setup(a) => commands::setup::run(cli, a),
         Cmd::Digest(a) => commands::digest::run_digest(cli, a),
         Cmd::Compact(a) => commands::digest::run_compact(cli, a),
+        Cmd::Humanize(a) => commands::humanize::run(cli, a),
         Cmd::Hygiene(c) => commands::hygiene::run(cli, c),
     }
 }

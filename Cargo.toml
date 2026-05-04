@@ -12,6 +12,7 @@ members = [
     "crates/crux-l10-setup",
     "crates/crux-l11-digest",
     "crates/crux-l12-hygiene",
+    "crates/crux-humanizer",
     "crates/crux-mcp",
     "crates/crux-cli",
 ]
@@ -42,6 +43,7 @@ crux-l9-coach = { path = "crates/crux-l9-coach" }
 crux-l10-setup = { path = "crates/crux-l10-setup" }
 crux-l11-digest = { path = "crates/crux-l11-digest" }
 crux-l12-hygiene = { path = "crates/crux-l12-hygiene" }
+crux-humanizer = { path = "crates/crux-humanizer" }
 crux-mcp = { path = "crates/crux-mcp" }
 
 # CLI

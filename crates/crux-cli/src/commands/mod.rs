@@ -7,6 +7,7 @@ pub mod digest;
 pub mod doctor;
 pub mod execute;
 pub mod hook;
+pub mod humanize;
 pub mod hygiene;
 pub mod init;
 pub mod mcp;

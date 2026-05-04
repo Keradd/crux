@@ -23,6 +23,7 @@ crux-l9-coach.workspace = true
 crux-l10-setup.workspace = true
 crux-l11-digest.workspace = true
 crux-l12-hygiene.workspace = true
+crux-humanizer.workspace = true
 crux-mcp.workspace = true
 
 clap.workspace = true

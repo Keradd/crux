@@ -1,0 +1,14 @@
+[package]
+name = "crux-humanizer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "CRUX Humanizer: deterministic local rewrite of AI-flavoured prose into concise, human-sounding text. Preserves code blocks, URLs, paths, and technical literals."
+
+[dependencies]
+crux-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+regex = "1.10"
