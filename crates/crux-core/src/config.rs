@@ -52,6 +52,7 @@ pub struct LayerToggles {
     pub l9_coach: bool,
     pub l10_setup: bool,
     pub l11_digest: bool,
+    pub l12_hygiene: bool,
 }
 
 impl Default for LayerToggles {
@@ -68,6 +69,7 @@ impl Default for LayerToggles {
             l9_coach: true,
             l10_setup: true,
             l11_digest: true,
+            l12_hygiene: false,
         }
     }
 }
@@ -488,6 +490,34 @@ l7_sandbox = false
             "L7 sandbox must default to enabled (portable isolation, no system deps) \
              so crux_execute is usable out-of-the-box."
         );
+    }
+
+    #[test]
+    fn l12_hygiene_is_disabled_by_default() {
+        let t = LayerToggles::default();
+        assert!(
+            !t.l12_hygiene,
+            "L12 hygiene must default OFF; it is opt-in per CRUX policy."
+        );
+    }
+
+    #[test]
+    fn l12_hygiene_project_opt_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let proj = dir.path();
+        let proj_cfg_path = proj.join(".crux").join("config.toml");
+        std::fs::create_dir_all(proj_cfg_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &proj_cfg_path,
+            r#"[layers]
+l12_hygiene = true
+"#,
+        )
+        .unwrap();
+
+        let loaded = load(Some(proj)).unwrap();
+        assert!(loaded.config.layers.l12_hygiene);
+        assert!(loaded.config.layers.l11_digest);
     }
 
     #[test]

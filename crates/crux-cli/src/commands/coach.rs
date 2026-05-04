@@ -6,7 +6,7 @@ use clap::{Args as ClapArgs, Subcommand};
 use crux_core::paths::expand_user_path;
 use crux_core::Runtime;
 use crux_l9_coach::{
-    audit_openclaw, openclaw_category_label, CoachEngine, DriftTracker, LoopDetector,
+    audit_openclaw, openclaw_category_label, CoachEngine, DriftTracker, LoopDetector, TOTAL_LAYERS,
 };
 
 use super::resolve_project_root;
@@ -96,8 +96,8 @@ fn snapshot(cli: &Cli, args: &SnapshotArgs, persist: bool) -> Result<()> {
     println!("  L4 cache hits : {}", data.snapshot.l4_cache_hits);
     println!("  observations  : {}", data.snapshot.memory_observations);
     println!(
-        "  layers active : {}/10 ({} unused)",
-        data.snapshot.active_layers, data.snapshot.unused_layers
+        "  layers active : {}/{} ({} unused)",
+        data.snapshot.active_layers, TOTAL_LAYERS, data.snapshot.unused_layers
     );
     println!();
 

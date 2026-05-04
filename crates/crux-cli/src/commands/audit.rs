@@ -76,6 +76,11 @@ fn run_once(cli: &Cli) -> Result<()> {
     print_layer(&runtime.config.layers.l9_coach, "L9  coach");
     print_layer(&runtime.config.layers.l10_setup, "L10 setup");
     print_layer(&runtime.config.layers.l11_digest, "L11 digest");
+    print_layer_with_note(
+        &runtime.config.layers.l12_hygiene,
+        "L12 hygiene",
+        Some("opt-in"),
+    );
     println!();
 
     println!("snapshot:");
@@ -139,6 +144,14 @@ fn print_layer(active: &bool, label: &str) {
     println!("  [{}] {}", marker, label);
 }
 
+fn print_layer_with_note(active: &bool, label: &str, note: Option<&str>) {
+    let marker = if *active { "ON " } else { "off" };
+    match note {
+        Some(n) if !*active => println!("  [{}] {} ({})", marker, label, n),
+        _ => println!("  [{}] {}", marker, label),
+    }
+}
+
 fn active_layer_summary(t: &crux_core::config::LayerToggles) -> serde_json::Value {
     serde_json::json!({
         "l1_output": t.l1_output,
@@ -152,7 +165,42 @@ fn active_layer_summary(t: &crux_core::config::LayerToggles) -> serde_json::Valu
         "l9_coach": t.l9_coach,
         "l10_setup": t.l10_setup,
         "l11_digest": t.l11_digest,
+        "l12_hygiene": t.l12_hygiene,
     })
+}
+
+pub(crate) fn layers_info(t: &crux_core::config::LayerToggles) -> serde_json::Value {
+    serde_json::json!({
+        "l1_output":       layer_info_entry(t.l1_output, None),
+        "l2_mcp_shrink":   layer_info_entry(t.l2_mcp_shrink, None),
+        "l3_bash_filter":  layer_info_entry(t.l3_bash_filter, None),
+        "l4_read_cache":   layer_info_entry(t.l4_read_cache, None),
+        "l5_ast_graph":    layer_info_entry(t.l5_ast_graph, None),
+        "l6_hybrid_search": layer_info_entry(t.l6_hybrid_search, None),
+        "l7_sandbox":      layer_info_entry(t.l7_sandbox, None),
+        "l8_memory":       layer_info_entry(t.l8_memory, None),
+        "l9_coach":        layer_info_entry(t.l9_coach, None),
+        "l10_setup":       layer_info_entry(t.l10_setup, None),
+        "l11_digest":      layer_info_entry(t.l11_digest, None),
+        "l12_hygiene":     layer_info_entry(
+            t.l12_hygiene,
+            if t.l12_hygiene { None } else { Some("opt-in hygiene layer") },
+        ),
+    })
+}
+
+fn layer_info_entry(enabled: bool, reason: Option<&str>) -> serde_json::Value {
+    match reason {
+        Some(r) => serde_json::json!({
+            "available": true,
+            "enabled": enabled,
+            "reason": r,
+        }),
+        None => serde_json::json!({
+            "available": true,
+            "enabled": enabled,
+        }),
+    }
 }
 
 pub(crate) fn build_payload(
@@ -166,6 +214,7 @@ pub(crate) fn build_payload(
         "project": project,
         "coach": data,
         "layers_toggled": active_layer_summary(layers),
+        "layers_info": layers_info(layers),
         "telemetry": stats.iter().map(|s| serde_json::json!({
             "layer": s.layer,
             "events": s.events,
@@ -290,6 +339,7 @@ fn write_text<W: Write>(
     write_layer(writer, layers.l9_coach, "L9  coach")?;
     write_layer(writer, layers.l10_setup, "L10 setup")?;
     write_layer(writer, layers.l11_digest, "L11 digest")?;
+    write_layer_with_note(writer, layers.l12_hygiene, "L12 hygiene", Some("opt-in"))?;
     writeln!(writer)?;
 
     writeln!(writer, "snapshot:")?;
@@ -361,6 +411,20 @@ fn write_layer<W: Write>(writer: &mut W, active: bool, label: &str) -> Result<()
     Ok(())
 }
 
+fn write_layer_with_note<W: Write>(
+    writer: &mut W,
+    active: bool,
+    label: &str,
+    note: Option<&str>,
+) -> Result<()> {
+    let marker = if active { "ON " } else { "off" };
+    match note {
+        Some(n) if !active => writeln!(writer, "  [{}] {} ({})", marker, label, n)?,
+        _ => writeln!(writer, "  [{}] {}", marker, label)?,
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -385,7 +449,7 @@ mod tests {
                 l4_cache_hits: 0,
                 memory_observations: 0,
                 active_layers: 11,
-                unused_layers: 0,
+                unused_layers: 1,
             },
         }
     }
@@ -471,5 +535,48 @@ mod tests {
         assert!(s.contains("CRUX audit — score 80"));
         assert!(s.contains("active layers:"));
         assert!(s.contains("L7  sandbox"));
+        assert!(s.contains("L12 hygiene"));
+        assert!(
+            s.contains("L12 hygiene (opt-in)"),
+            "default-off L12 must render with opt-in annotation, got:\n{s}"
+        );
+    }
+
+    #[test]
+    fn layers_info_reports_l12_as_available_but_opt_in_when_off() {
+        let layers = LayerToggles::default();
+        assert!(!layers.l12_hygiene);
+        let info = layers_info(&layers);
+        let l12 = &info["l12_hygiene"];
+        assert_eq!(l12["available"].as_bool(), Some(true));
+        assert_eq!(l12["enabled"].as_bool(), Some(false));
+        assert_eq!(l12["reason"].as_str(), Some("opt-in hygiene layer"));
+
+        let l11 = &info["l11_digest"];
+        assert_eq!(l11["available"].as_bool(), Some(true));
+        assert!(l11.get("reason").is_none());
+    }
+
+    #[test]
+    fn layers_info_omits_reason_when_l12_enabled() {
+        let layers = LayerToggles {
+            l12_hygiene: true,
+            ..LayerToggles::default()
+        };
+        let info = layers_info(&layers);
+        let l12 = &info["l12_hygiene"];
+        assert_eq!(l12["enabled"].as_bool(), Some(true));
+        assert!(l12.get("reason").is_none());
+    }
+
+    #[test]
+    fn build_payload_exposes_layers_info() {
+        let layers = LayerToggles::default();
+        let data = dummy_coach();
+        let p = build_payload(None, &layers, &data, &[]);
+        let info = p
+            .get("layers_info")
+            .expect("payload must carry layers_info");
+        assert!(info.get("l12_hygiene").is_some());
     }
 }

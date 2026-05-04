@@ -551,21 +551,24 @@ fn audit(runtime: &Runtime) -> Result<String, String> {
     let stats =
         telemetry::stats_by_layer(&runtime.conn, project.as_deref()).map_err(|e| e.to_string())?;
 
+    let layers = &runtime.config.layers;
     let payload = json!({
         "project": project,
         "layers": {
-            "l1_output": runtime.config.layers.l1_output,
-            "l2_mcp_shrink": runtime.config.layers.l2_mcp_shrink,
-            "l3_bash_filter": runtime.config.layers.l3_bash_filter,
-            "l4_read_cache": runtime.config.layers.l4_read_cache,
-            "l5_ast_graph": runtime.config.layers.l5_ast_graph,
-            "l6_hybrid_search": runtime.config.layers.l6_hybrid_search,
-            "l7_sandbox": runtime.config.layers.l7_sandbox,
-            "l8_memory": runtime.config.layers.l8_memory,
-            "l9_coach": runtime.config.layers.l9_coach,
-            "l10_setup": runtime.config.layers.l10_setup,
-            "l11_digest": runtime.config.layers.l11_digest,
+            "l1_output": layers.l1_output,
+            "l2_mcp_shrink": layers.l2_mcp_shrink,
+            "l3_bash_filter": layers.l3_bash_filter,
+            "l4_read_cache": layers.l4_read_cache,
+            "l5_ast_graph": layers.l5_ast_graph,
+            "l6_hybrid_search": layers.l6_hybrid_search,
+            "l7_sandbox": layers.l7_sandbox,
+            "l8_memory": layers.l8_memory,
+            "l9_coach": layers.l9_coach,
+            "l10_setup": layers.l10_setup,
+            "l11_digest": layers.l11_digest,
+            "l12_hygiene": layers.l12_hygiene,
         },
+        "layers_info": layers_info(layers),
         "telemetry": stats.iter().map(|s| json!({
             "layer": s.layer,
             "events": s.events,
@@ -575,6 +578,33 @@ fn audit(runtime: &Runtime) -> Result<String, String> {
         })).collect::<Vec<_>>(),
     });
     Ok(serde_json::to_string_pretty(&payload).unwrap())
+}
+
+fn layers_info(t: &crux_core::config::LayerToggles) -> Value {
+    json!({
+        "l1_output":        layer_info_entry(t.l1_output, None),
+        "l2_mcp_shrink":    layer_info_entry(t.l2_mcp_shrink, None),
+        "l3_bash_filter":   layer_info_entry(t.l3_bash_filter, None),
+        "l4_read_cache":    layer_info_entry(t.l4_read_cache, None),
+        "l5_ast_graph":     layer_info_entry(t.l5_ast_graph, None),
+        "l6_hybrid_search": layer_info_entry(t.l6_hybrid_search, None),
+        "l7_sandbox":       layer_info_entry(t.l7_sandbox, None),
+        "l8_memory":        layer_info_entry(t.l8_memory, None),
+        "l9_coach":         layer_info_entry(t.l9_coach, None),
+        "l10_setup":        layer_info_entry(t.l10_setup, None),
+        "l11_digest":       layer_info_entry(t.l11_digest, None),
+        "l12_hygiene":      layer_info_entry(
+            t.l12_hygiene,
+            if t.l12_hygiene { None } else { Some("opt-in hygiene layer") },
+        ),
+    })
+}
+
+fn layer_info_entry(enabled: bool, reason: Option<&str>) -> Value {
+    match reason {
+        Some(r) => json!({ "available": true, "enabled": enabled, "reason": r }),
+        None => json!({ "available": true, "enabled": enabled }),
+    }
 }
 
 fn find_symbol(runtime: &Runtime, args: &Value) -> Result<String, String> {
@@ -2330,5 +2360,35 @@ mod tests {
         .unwrap();
         let count = out.matches("joint obs").count();
         assert_eq!(count, 1, "dedup failed: footer = {out}");
+    }
+
+    #[test]
+    fn audit_payload_reports_l12_available_opt_in_by_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = make_runtime(dir.path().to_path_buf());
+        assert!(!runtime.config.layers.l12_hygiene);
+
+        let out = audit(&runtime).unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+
+        assert_eq!(v["layers"]["l12_hygiene"].as_bool(), Some(false));
+        let l12 = &v["layers_info"]["l12_hygiene"];
+        assert_eq!(l12["available"].as_bool(), Some(true));
+        assert_eq!(l12["enabled"].as_bool(), Some(false));
+        assert_eq!(l12["reason"].as_str(), Some("opt-in hygiene layer"));
+    }
+
+    #[test]
+    fn audit_payload_drops_reason_when_l12_enabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut runtime = make_runtime(dir.path().to_path_buf());
+        runtime.config.layers.l12_hygiene = true;
+
+        let out = audit(&runtime).unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["layers"]["l12_hygiene"].as_bool(), Some(true));
+        let l12 = &v["layers_info"]["l12_hygiene"];
+        assert_eq!(l12["enabled"].as_bool(), Some(true));
+        assert!(l12.get("reason").is_none());
     }
 }

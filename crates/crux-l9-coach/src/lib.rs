@@ -5,7 +5,7 @@ pub mod openclaw;
 pub mod types;
 
 pub use drift::DriftTracker;
-pub use engine::CoachEngine;
+pub use engine::{CoachEngine, TOTAL_LAYERS};
 pub use loop_detect::LoopDetector;
 pub use openclaw::{
     audit as audit_openclaw, category_label as openclaw_category_label, AuditReport,

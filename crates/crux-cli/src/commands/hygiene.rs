@@ -120,6 +120,11 @@ fn run_comments(cli: &Cli, args: &CommentArgs) -> Result<()> {
     }
 
     let hook_mode = args.changed_from_stdin;
+    if hook_mode && !l12_hygiene_enabled(&options.root) {
+        let _ = read_stdin_to_string();
+        return Ok(());
+    }
+
     let scoped = hook_mode || !args.paths.is_empty();
     let report = if scoped {
         let mut targets: Vec<PathBuf> = args.paths.clone();
@@ -208,6 +213,13 @@ fn read_stdin_to_string() -> Result<String> {
     Ok(buf)
 }
 
+fn l12_hygiene_enabled(project_root: &std::path::Path) -> bool {
+    match crux_core::config::load(Some(project_root)) {
+        Ok(loaded) => loaded.config.layers.l12_hygiene,
+        Err(_) => false,
+    }
+}
+
 fn extract_edited_file_path(raw: &str) -> Result<Option<PathBuf>> {
     if raw.trim().is_empty() {
         return Ok(None);
@@ -292,5 +304,29 @@ mod tests {
     fn extract_file_path_invalid_json_errors() {
         let err = extract_edited_file_path("not json").unwrap_err();
         assert!(err.to_string().contains("not valid JSON"));
+    }
+
+    #[test]
+    fn l12_hygiene_enabled_false_when_toggle_off() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".crux")).unwrap();
+        std::fs::write(
+            dir.path().join(".crux").join("config.toml"),
+            "[layers]\nl12_hygiene = false\n",
+        )
+        .unwrap();
+        assert!(!l12_hygiene_enabled(dir.path()));
+    }
+
+    #[test]
+    fn l12_hygiene_enabled_true_when_opted_in() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".crux")).unwrap();
+        std::fs::write(
+            dir.path().join(".crux").join("config.toml"),
+            "[layers]\nl12_hygiene = true\n",
+        )
+        .unwrap();
+        assert!(l12_hygiene_enabled(dir.path()));
     }
 }

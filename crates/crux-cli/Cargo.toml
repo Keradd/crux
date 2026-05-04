@@ -36,6 +36,9 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 chrono.workspace = true
 
+[dev-dependencies]
+tempfile = "3"
+
 # ── Feature gates ─────────────────────────────────────────────────────
 #
 # Default build (`cargo build`) ships the offline `HashEmbedder` only.

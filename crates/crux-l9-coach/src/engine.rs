@@ -10,6 +10,7 @@ use crate::types::{score_to_grade, CoachData, Pattern, Severity, Snapshot};
 const DEFAULT_CONTEXT_WINDOW: u32 = 200_000;
 const CLAUDE_MD_LEAN_PCT: f64 = 2.0;
 const CLAUDE_MD_FAT_PCT: f64 = 3.0;
+pub const TOTAL_LAYERS: u32 = 12;
 
 pub struct CoachEngine<'c> {
     conn: &'c Connection,
@@ -128,13 +129,13 @@ impl<'c> CoachEngine<'c> {
         }
 
         let active = active_layer_count(&self.config.layers);
-        let unused = 11 - active;
+        let unused = TOTAL_LAYERS.saturating_sub(active);
         if active <= 3 {
             score -= 5;
             patterns_bad.push(
                 Pattern::bad(
                     "Few layers active",
-                    format!("only {active}/11 layers enabled."),
+                    format!("only {active}/{TOTAL_LAYERS} layers enabled."),
                     Severity::Medium,
                 )
                 .with_fix("Enable at minimum L3/L4/L8 — see `.crux/config.toml`."),
@@ -254,6 +255,7 @@ fn active_layer_count(t: &crux_core::config::LayerToggles) -> u32 {
         t.l9_coach,
         t.l10_setup,
         t.l11_digest,
+        t.l12_hygiene,
     ]
     .into_iter()
     .filter(|b| *b)
@@ -313,6 +315,28 @@ mod tests {
         let coach = CoachEngine::new(&conn, &cfg, Some(dir.path()));
         let data = coach.snapshot().unwrap();
         assert!(data.health_score >= 70, "got {}", data.health_score);
+    }
+
+    #[test]
+    fn active_layer_count_counts_l12_when_enabled() {
+        let mut t = crux_core::config::LayerToggles::default();
+        let base = active_layer_count(&t);
+        assert!(!t.l12_hygiene);
+        t.l12_hygiene = true;
+        let with_l12 = active_layer_count(&t);
+        assert_eq!(with_l12, base + 1);
+    }
+
+    #[test]
+    fn unused_layers_reports_against_total_twelve() {
+        let dir = tempfile::tempdir().unwrap();
+        let (conn, cfg) = fixture_runtime(dir.path());
+        let coach = CoachEngine::new(&conn, &cfg, Some(dir.path()));
+        let data = coach.snapshot().unwrap();
+        assert_eq!(
+            data.snapshot.active_layers + data.snapshot.unused_layers,
+            TOTAL_LAYERS
+        );
     }
 
     #[test]
