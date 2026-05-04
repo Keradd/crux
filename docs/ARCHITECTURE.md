@@ -129,6 +129,7 @@ Per-project view via `crux config`.
 │  │ L9: Coach (quality score + nudges + audit)             │    │
 │  │ L10: Setup (init scaffolding + profiles)               │    │
 │  │ L11: Conversation digest (turn-event rollup)           │    │
+│  │ L12: Comment hygiene / slop guard (opt-in)             │    │
 │  └────────────────────────────────────────────────────────┘    │
 │                                                                  │
 │  ┌────────────────────────────────────────────────────────┐    │
@@ -1334,6 +1335,8 @@ pub fn init_project(opts: InitOptions) -> Result<()> {
 
 **Purpose:** keep AI-flavoured verbose comments out of the source tree.
 
+**Status:** opt-in. `LayerToggles::l12_hygiene` defaults to `false`; the audit surface reports L12 as `available: true, enabled: false, reason: "opt-in hygiene layer"` until a project enables it via `[layers] l12_hygiene = true` in `.crux/config.toml`. The toggle only gates the Claude Code `PostToolUse` hook path — standalone `crux hygiene comments --check|--fix|--strip` and the `crux build` hygiene gate keep working regardless of the flag.
+
 **Module: `crux-l12-hygiene`.** Deterministic scanner + fixer + stripper with a shared rule table (`rules.rs`) and a string-literal-aware tokenizer (`scanner.rs`). Three entry points:
 
 - `scan_comments(root, options) -> HygieneReport` — pure scan; the `check` CLI path and the Claude Code `PostToolUse` hook use this. Violation rule ids include `decorative-banner`, `goal-block`, `public-surface-block`, `marketing-phrase`, `pattern-adapted-from`, `layer-label`, and `long-module-doc`.
@@ -1899,6 +1902,7 @@ CRUX MAY:
 | L9 | Score gaming | Penalty for ignoring nudges (cooldown shrinks) |
 | L10 | Init overrides existing config | Refuse if files exist; require `--force` |
 | L11 | Digest drops safety-critical events | Deterministic renderer preserves per-file path + tool verb; digest never elides errors or secrets-bearing paths; `auto_compact_every_n` configurable; L8 mirror opt-in |
+| L12 | Hygiene rewrite deletes load-bearing comment | Default **off** (`l12_hygiene = false`); only the `PostToolUse` hook path is gated by the toggle; `--fix` / `--strip` always preserve `// SAFETY:`, `// SECURITY:`, `// WARNING:`, `// TODO:`, `// FIXME:`, and `///` doctests; string / raw-string / char literals untouched; idempotent |
 
 ### 14.2 Credentials & secrets
 

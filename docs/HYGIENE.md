@@ -42,6 +42,39 @@ build on any violation, then hands off to `cargo build` with every
 argument after `--` passed through verbatim. Use `--skip-hygiene`
 when you need a build without running the guard.
 
+## Layer toggle (`l12_hygiene`)
+
+L12 is opt-in. `LayerToggles::l12_hygiene` defaults to `false` so
+that external projects using CRUX never get surprised by the
+`PostToolUse` hook silently flagging their existing comments. Turn
+it on per project with:
+
+```toml
+# .crux/config.toml
+[layers]
+l12_hygiene = true
+```
+
+The toggle only gates the hook-mode invocation
+(`crux hygiene comments --changed-from-stdin`), which no-ops with
+exit 0 when the layer is off. Standalone commands
+(`--check`, `--fix`, `--strip`) and the `crux build` hygiene gate
+run regardless — the CLI never requires the toggle to be on.
+
+The `crux audit` JSON surface reflects the toggle in `layers_info`:
+
+```json
+"layers_info": {
+  "l12_hygiene": {
+    "available": true,
+    "enabled": false,
+    "reason": "opt-in hygiene layer"
+  }
+}
+```
+
+When `enabled: true`, the `reason` field is omitted.
+
 ## Agent hook usage
 
 Agents that support hooks (currently **Claude Code**) can run the
