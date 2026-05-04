@@ -1,10 +1,10 @@
 # CRUX — Architecture Design
 
-**Tagline:** *One Rust binary. One SQLite DB. Eleven layers. Local-first.*
+**Tagline:** *Local-first Rust runtime for AI coding agents — token optimization, context hygiene, hybrid search, MCP tooling, comment cleanup, and humanized output.*
 
 CRUX = **C**ompression **R**untime for **U**niversal e**X**ecution. Combines the best of 10 token-optimization repos into a single coherent system.
 
-**Status:** All 11 layers shipped — see [Roadmap](#11-roadmap-phased) for per-phase detail. **Last reviewed** alongside `crux` v0.2.x + L11 digest.
+**Status:** All 12 layers shipped plus the standalone humanizer CLI — see [Roadmap](#11-roadmap-phased) for per-phase detail. **Last reviewed** alongside `crux` v0.3.x (L12 hygiene + humanizer).
 
 ## Contents
 
@@ -167,6 +167,8 @@ crux/
     ├── crux-l9-coach/        # quality score + loop detect + CLAUDE.md drift
     ├── crux-l10-setup/       # crux init scaffolding + profile templates
     ├── crux-l11-digest/      # turn-event rollup + deterministic renderer
+    ├── crux-l12-hygiene/     # comment hygiene / slop guard (scan + fix + strip)
+    ├── crux-humanizer/       # local rewrite of AI prose → human-sounding text
     ├── crux-mcp/             # MCP stdio JSON-RPC server (13 tools)
     └── crux-cli/             # `crux` binary
 ```
@@ -1322,6 +1324,30 @@ pub fn init_project(opts: InitOptions) -> Result<()> {
 - `django.md`, `rails.md`, `nestjs.md`, `laravel.md`
 - **NEW:** `rust-cli.md`, `rust-actix.md`, `go-gin.md`, `python-fastapi.md`
 
+### 7.11 Layer 11 — Conversation Digest
+
+**Purpose:** keep long sessions from hoarding raw tool history in the model's context window.
+
+**Module: `crux-l11-digest`.** `turn_event` rows are seeded by `crux hook post-tool`, by the MCP dispatcher, and by the CLI itself; `DigestEngine::compact` rolls pending events into a compact `turn_digest` (reads/edits bucketed by file, bash bucketed by first word, searches bucketed by query). Optional `mirror_to_l8` writes the rendered summary into L8 memory as a `convention` observation so future sessions can recall it.
+
+### 7.12 Layer 12 — Comment Hygiene / Slop Guard
+
+**Purpose:** keep AI-flavoured verbose comments out of the source tree.
+
+**Module: `crux-l12-hygiene`.** Deterministic scanner + fixer + stripper with a shared rule table (`rules.rs`) and a string-literal-aware tokenizer (`scanner.rs`). Three entry points:
+
+- `scan_comments(root, options) -> HygieneReport` — pure scan; the `check` CLI path and the Claude Code `PostToolUse` hook use this. Violation rule ids include `decorative-banner`, `goal-block`, `public-surface-block`, `marketing-phrase`, `pattern-adapted-from`, `layer-label`, and `long-module-doc`.
+- `fix_comments(root, options) -> HygieneReport` — auto-rewrite of banners, `//! Goal:` / `//! Public surface:` runs, and over-long module docs. Never touches code lines, markdown source, `// SAFETY:` / `// SECURITY:` / `// WARNING:` / `// TODO:` comments, or `///` doctests.
+- `strip_comments(root, options) -> StripReport` — aggressive pass that deletes every other `//`, `///`, `//!` line in the workspace. Protects the same small SAFETY/SECURITY/WARNING/TODO/FIXME set plus `///` doctest blocks that contain a fenced code example. Idempotent; collapses blank runs left behind.
+
+Markdown files are skipped by policy — prose rewrites go through the Humanizer instead.
+
+### 7.13 Humanizer (output quality, not a numbered layer)
+
+**Purpose:** rewrite raw AI-flavoured prose into concise, human-sounding text before it ever reaches a PR description, release note, or committed comment.
+
+**Module: `crux-humanizer`.** Ships as a parallel crate rather than a numbered layer because the transform runs on agent output, not on CRUX's internal token pipeline — there is no telemetry bucket to share with L1–L12. Deterministic and local (no LLM round-trip). Exposed through `crux humanize` with six modes (`concise`, `casual`, `professional`, `developer`, `social`, `github-readme`), stdin / `--input` / `--file` input, `--json` and `--stats` output. Rules live in `crates/crux-humanizer/src/rules.rs`; a segment-aware tokenizer (`tokenizer.rs`) locks fenced code, inline code, URLs, paths, IPv4 / IPv6 / hex literals, qualified identifiers, function-call literals, `@scope/pkg`, and `SCREAMING_SNAKE_CASE` constants so they pass through byte-for-byte.
+
 ---
 
 ## 8. MCP Server Tools
@@ -1743,7 +1769,7 @@ alias docker='crux bash docker'
 - [x] `crux hook post-tool` seeds a `turn_event` for every Edit/Write/Read/Bash/MCP call
 - [x] `crux mcp` dispatcher auto-records a `turn_event` for every non-digest `tools/call` so agents driving CRUX purely through MCP (Cursor, Windsurf default) still get digests without hooks
 - [x] `[layer.l11]` config: `auto_compact_every_n` (50), `max_summary_tokens` (600), `mirror_to_l8` (true), `mirror_importance` (4), `render_max_events` (200)
-- [x] L9 Coach `unused_layers` + "Few layers active" threshold treat CRUX as 11 layers
+- [x] L9 Coach `unused_layers` + "Few layers active" threshold treat CRUX as 12 layers
 
 ### Phase 10: Polish (2-3 weeks) — IN PROGRESS
 - [ ] Documentation (mdBook)
@@ -1753,9 +1779,9 @@ alias docker='crux bash docker'
 - [ ] CHANGELOG, SemVer
 - [ ] Web dashboard (optional, separate crate)
 
-**Status:** All 11 layers shipped. Phase 10 polish remaining.
+**Status:** All 12 layers shipped plus the humanizer. Phase 10 polish remaining.
 
-**Test count:** 392 pass / 0 failed (402 with `crux-l7-sandbox/seccomp` on Linux) across 12 implementation crates.
+**Test count:** 621 pass / 0 failed on the default feature set across 14 crates (`--features crux-l7-sandbox/seccomp` adds Linux-only seccomp coverage).
 
 ---
 
@@ -1907,7 +1933,7 @@ Match in `regex` crate, applied before any compression step.
 
 CRUX vs the field:
 
-1. **Single Rust binary** — like rtk, but covers all 11 layers
+1. **Single Rust binary** — like rtk, but covers all 12 layers plus the humanizer
 2. **Local-first by default** — like alex, but adds Layer 5-6 graph + search
 3. **Sandbox + memory + coach combined** — no other repo combines all three
 4. **TOML for everything declarative** — rtk's pattern, applied universally
@@ -1983,7 +2009,7 @@ CRUX vs the field:
 
 CRUX is the **synthesis** of 10 token-optimization repos into a single coherent Rust system. Every pattern proven elsewhere is preserved; every gap identified is filled by cross-layer integration. The result is:
 
-- **More layers** than any single repo (11 vs 1-3 typical)
+- **More layers** than any single repo (12 vs 1-3 typical)
 - **Faster** than Python/Node implementations (Rust + SQLite)
 - **Local-first** (no API keys required, but pluggable for cloud)
 - **Cross-platform** (Linux/macOS/Windows × x86_64/aarch64)
@@ -1993,4 +2019,6 @@ CRUX is the **synthesis** of 10 token-optimization repos into a single coherent 
 
 **Token reduction target:** 60-90% on typical sessions, 95%+ on heavy-read workflows.
 
-Next step: implement Phase 0 (foundation), then iterate per roadmap.
+Phase 0–11 have shipped; Phase 10 polish (mdBook, crates.io publish,
+Homebrew tap, broader benchmark coverage) remains. L12 Comment Hygiene
+and the standalone Humanizer ship alongside the numbered layers.

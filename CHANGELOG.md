@@ -9,6 +9,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Layer 12 — Comment Hygiene / Slop Guard** (`crux-l12-hygiene`).
+  Deterministic scanner + auto-fixer for AI-flavoured source comments.
+  Flags decorative banners (`// ───`, `# ===`), `//! Goal:` /
+  `//! Public surface:` blocks, marketing phrases (`robust`,
+  `cutting-edge`, …), `Pattern adapted from …` notes, `Layer N`
+  duplicate labels, and AI-preamble restatements. String-literal
+  aware so `//!`-looking substrings inside `"..."` are never
+  rewritten.
+  - CLI: `crux hygiene comments --check` (scan-only, exit 1 on
+    violation), `--fix` (in-place auto-clean of banners /
+    `Goal:` blocks / long module-doc runs), `--json` for
+    machine-readable output, `--path <PATH>` repeatable to scope
+    a scan to specific files, and `--changed-from-stdin` for the
+    Claude Code `PostToolUse` hook flow.
+  - **`--strip` mode** — aggressive pass that removes every `//`,
+    `///`, and `//!` comment in the workspace except the small
+    protected set: `// SAFETY:` / `// SECURITY:` / `// WARNING:` /
+    `// TODO:` / `// FIXME:` plus any `///` doctest block that
+    contains a fenced code example. Idempotent, collapses blank
+    lines left behind, never touches markdown source.
+  - **Agent hook integration**: `crux setup claude-code
+    --enable-hygiene-hook` registers a `PostToolUse` entry that
+    runs `crux hygiene comments --check --changed-from-stdin`
+    after every Edit / Write / MultiEdit / NotebookEdit.
+    Warn-only (exit 2, stderr), never auto-rewrites.
+
+- **`crux build`** — hygiene-aware build wrapper. Runs
+  `crux hygiene comments --check` first and aborts on violation;
+  if clean, hands off to `cargo build` with every argument after
+  `--` passed through verbatim. `--skip-hygiene` is the escape
+  hatch for CI / tooling that needs to bypass the guard. Root
+  discovery walks up from `$CWD` to the nearest `Cargo.toml`, so
+  the command works from any sub-crate directory.
+
 - **CRUX Humanizer** — new `crux-humanizer` crate + `crux humanize`
   CLI subcommand. Rewrites raw AI-flavoured prose into concise,
   human-sounding text using a deterministic, local-only rule set
@@ -37,13 +71,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `--file <PATH>` / stdin, with `--json` for machine-readable
     output and `--stats` for a one-line stderr footer with
     chars / words saved + edit count.
-  - 36 unit tests in `crux-humanizer` cover buzzword removal,
+  - **Full-phrase pleasantry removal** — the opener list covers
+    the longer templates AI assistants emit verbatim
+    (`I'd be happy to help you with that`, `I'm happy to help`,
+    `Sure, I can help`, `Absolutely`, `Of course`, `You're
+    absolutely right`, …) in longest-first order so the regex
+    alternation matches the full phrase instead of leaving an
+    orphan fragment like `you with that!`.
+  - **Concise-mode filler removal** — drops `basically`, `just`,
+    `really`, `very`, `actually`, `simply`, `clearly` in every
+    mode except `Professional`. `I'll walk you through` →
+    `walk through` (and similar phrasings) collapse AI
+    self-reference into an imperative.
+  - **Sentence / punctuation cleanup** — after any strike pass,
+    orphan leading punctuation (`! In this article, …` →
+    `In this article, …`) is stripped so nothing reads as a
+    dangling fragment.
+  - 52 unit tests in `crux-humanizer` cover buzzword removal,
     code preservation (fenced + inline), URL preservation, IPv4 /
     hex / path / scoped-package preservation, mode-specific
     behaviour (Casual contracts, Concise does not, Professional
     keeps fluff, GithubReadme keeps blank lines), repetition
-    collapse, capitalisation preservation, stats accounting, and
-    a mixed-codeblock-and-strike-phrase regression case.
+    collapse, capitalisation preservation, stats accounting, the
+    new full-phrase pleasantry and filler passes, and the exact
+    smoke-test regression: input `"I'd be happy to help you with
+    that! In this article, I'll walk you through how to basically
+    just really simplify your code."` rewrites to
+    `"Walk through how to simplify your code."`.
 
 - **Hot reload `crux.toml`** (Phase 4 Task I). `crux-core` now ships a
   `ConfigWatcher` (in `crux_core::config_watch`) that holds a published
@@ -122,6 +176,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     rc scripts (`.bashrc`, `.bash_profile`) need an explicit indexer
     entry — `Path::extension()` doesn't see leading-dot names.
   - 18 new unit tests (`extract::tests::lua_*`, `extract::tests::bash_*`).
+
+### Changed
+
+- **CI simplified to four jobs** — `.github/workflows/ci.yml`
+  dropped the OS matrix (macOS / Windows), the Rust 1.85 MSRV
+  job, and the standalone `test-seccomp` job. Remaining jobs are
+  `rustfmt`, `clippy`, `test`, `docs`, all on Ubuntu-latest with
+  Rust stable. Matches what contributors actually run locally
+  and removes the cross-platform flakiness tax while CRUX itself
+  is still pre-1.0.
+
+### Tests
+
+- **621 pass / 0 fail** on the default feature set (+229 over the
+  v0.3.0 baseline of 392). New coverage: 12 unit tests in
+  `crux-humanizer` regressions (+16 over 36), stripper /
+  scanner / fixer coverage in `crux-l12-hygiene`, and the
+  `crux build` hygiene-gate smoke.
 
 ### Planned
 

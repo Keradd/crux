@@ -9,6 +9,7 @@ and the PR checklist that keep the workspace tidy and the build green.
 - [Getting started](#getting-started)
 - [Development workflow](#development-workflow)
 - [Workspace conventions](#workspace-conventions)
+- [Comment hygiene](#comment-hygiene)
 - [Commit message conventions](#commit-message-conventions)
 - [Pull request checklist](#pull-request-checklist)
 - [Adding a new layer](#adding-a-new-layer)
@@ -31,8 +32,8 @@ pinned in `Cargo.toml`.
 git clone https://github.com/Keradd/crux.git
 cd crux
 cargo build                  # warning-free in <5s warm
-cargo test                   # 392 passing / 0 failed (default features)
-cargo test --features crux-l7-sandbox/seccomp   # 402 passing / 0 failed (Linux)
+cargo test                   # 621 passing / 0 failed (default features)
+cargo test --features crux-l7-sandbox/seccomp   # adds Linux-only seccomp tests
 ```
 
 Optional Linux extras:
@@ -49,7 +50,15 @@ Typical contributor loop:
    downstream workarounds.
 3. **Test** — write or extend tests *before* the implementation where
    practical. New behaviour without coverage will be asked for it.
-4. **Lint** — `cargo fmt --all && cargo clippy --all-targets --all-features -- -D warnings`.
+4. **Lint** — the local equivalents of the four CI jobs:
+   ```bash
+   cargo fmt --all -- --check
+   cargo clippy --workspace --all-targets -- -D warnings
+   cargo test --workspace
+   RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+   ```
+   Prefer `crux build` over raw `cargo build` — it runs the L12
+   hygiene check first and aborts on AI-flavoured comments.
 5. **Docs** — update `README.md`, `docs/ARCHITECTURE.md`, and / or the
    relevant crate rustdoc whenever public surface shifts.
 6. **Changelog** — append an entry under `## [Unreleased]` in
@@ -119,6 +128,47 @@ These are observed patterns; please respect them when extending.
 - **No new dependencies without good reason.** Prefer the standard
   library or an existing workspace dep.
 
+## Comment hygiene
+
+CRUX prefers clear names and tests over explanatory comments.
+The L12 Slop Guard (`crux hygiene comments`) is the tool we run
+against ourselves — same rule set any contributor is expected to
+meet before a PR is merged.
+
+Rules for new code:
+
+- **Default is zero comments.** Use descriptive names for
+  functions, types, variables, and modules instead of explanatory
+  prose.
+- Allowed exceptions — only when there is a real engineering
+  reason a reader would otherwise miss:
+  - `// SAFETY:` above every `unsafe { ... }` block or
+    `unsafe impl`.
+  - `// SECURITY:` for credential / auth / sandbox-escape-relevant
+    code.
+  - `// WARNING:` for non-obvious footguns.
+  - `// TODO:` / `// FIXME:` only when the work is tracked.
+  - `///` doctests with runnable ````` examples.
+  - One-line invariants the compiler cannot express.
+- **Banned styles**: decorative banners (`// ────`, `# ====`),
+  `//! Goal:` / `//! Public surface:` blocks, marketing phrases
+  (`robust`, `cutting-edge`, …), `Layer N` duplicate labels,
+  AI-style preambles ("This function does X by Y"), and obvious
+  restatements (`// increment counter`).
+
+Verify locally before opening a PR:
+
+```bash
+crux hygiene comments --check       # exit 1 on any violation
+crux hygiene comments --fix         # auto-clean banners / Goal blocks
+crux hygiene comments --strip       # aggressive: remove non-essential comments
+crux build                          # hygiene check + cargo build in one step
+```
+
+`crux build` is the preferred build entry point for contributors
+— it is `cargo build` with the hygiene gate in front, so the
+review never has to relitigate comment style.
+
 ## Commit message conventions
 
 CRUX uses [Conventional Commits](https://www.conventionalcommits.org/)
@@ -157,11 +207,16 @@ release: v0.1.1 — fix L7 Python on Windows + musl cross-build
 
 Before opening a PR, please verify each of the following:
 
-- [ ] `cargo fmt --all` is clean.
-- [ ] `cargo clippy --all-targets --all-features -- -D warnings` is clean.
+- [ ] `cargo fmt --all -- --check` is clean.
+- [ ] `cargo clippy --workspace --all-targets -- -D warnings` is clean.
 - [ ] `cargo test --workspace` passes
       (`cargo test --workspace --features crux-l7-sandbox/seccomp`
       on Linux if you touched L7).
+- [ ] `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps`
+      is clean.
+- [ ] `crux hygiene comments --check` is clean (or the offending
+      comments carry a documented `SAFETY` / `SECURITY` / `WARNING`
+      / `TODO` reason).
 - [ ] New behaviour is covered by tests.
 - [ ] Public APIs include doc comments; any new CLI flag is documented
       in `--help` output (clap `#[arg(help = …)]`).
