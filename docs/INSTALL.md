@@ -39,7 +39,7 @@ Tagged releases ship statically-linked binaries on the
 Each archive ships with a `.sha256` checksum next to it.
 
 ```bash
-TAG=v0.3.0
+TAG=v0.4.0
 curl -L -o crux.tar.gz \
   "https://github.com/Keradd/crux/releases/download/${TAG}/crux-${TAG}-x86_64-unknown-linux-gnu.tar.gz"
 tar -xzf crux.tar.gz

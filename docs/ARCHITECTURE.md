@@ -4,7 +4,7 @@
 
 CRUX = **C**ompression **R**untime for **U**niversal e**X**ecution. Combines the best of 10 token-optimization repos into a single coherent system.
 
-**Status:** All 12 layers shipped plus the standalone humanizer CLI — see [Roadmap](#11-roadmap-phased) for per-phase detail. **Last reviewed** alongside `crux` v0.3.x (L12 hygiene + humanizer).
+**Status:** All 12 layers shipped plus the standalone humanizer CLI — see [Roadmap](#11-roadmap-phased) for per-phase detail. **Last reviewed** alongside `crux` v0.4.x (L12 hygiene wired as an opt-in audit layer + humanizer).
 
 ## Contents
 

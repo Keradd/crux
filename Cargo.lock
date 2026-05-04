@@ -466,7 +466,7 @@ checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 
 [[package]]
 name = "crux-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -495,7 +495,7 @@ dependencies = [
 
 [[package]]
 name = "crux-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "dirs 5.0.1",
@@ -513,7 +513,7 @@ dependencies = [
 
 [[package]]
 name = "crux-humanizer"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "crux-core",
  "regex",
@@ -523,7 +523,7 @@ dependencies = [
 
 [[package]]
 name = "crux-l10-setup"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "crux-core",
@@ -538,7 +538,7 @@ dependencies = [
 
 [[package]]
 name = "crux-l11-digest"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "crux-core",
@@ -552,7 +552,7 @@ dependencies = [
 
 [[package]]
 name = "crux-l12-hygiene"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "serde",
  "tempfile",
@@ -560,7 +560,7 @@ dependencies = [
 
 [[package]]
 name = "crux-l3-bash"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "crux-core",
  "regex",
@@ -573,7 +573,7 @@ dependencies = [
 
 [[package]]
 name = "crux-l4-readcache"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "criterion",
@@ -591,7 +591,7 @@ dependencies = [
 
 [[package]]
 name = "crux-l5-ast"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bincode",
  "chrono",
@@ -617,7 +617,7 @@ dependencies = [
 
 [[package]]
 name = "crux-l6-search"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "criterion",
@@ -635,7 +635,7 @@ dependencies = [
 
 [[package]]
 name = "crux-l7-sandbox"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "crux-core",
  "dirs 5.0.1",
@@ -649,7 +649,7 @@ dependencies = [
 
 [[package]]
 name = "crux-l8-memory"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "crux-core",
@@ -664,7 +664,7 @@ dependencies = [
 
 [[package]]
 name = "crux-l9-coach"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "crux-core",
@@ -679,7 +679,7 @@ dependencies = [
 
 [[package]]
 name = "crux-mcp"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "chrono",

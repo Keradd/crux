@@ -7,8 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-05-04 — L12 Comment Hygiene + Humanizer + hot-reload config + `crux build`
+
 ### Added
 
+- **L12 hygiene wired into the audit surface as an opt-in layer.**
+  `LayerToggles::l12_hygiene` now exists alongside L1–L11 and
+  defaults to `false`. `crux audit` (both CLI and the `crux_audit`
+  MCP tool) reports the new toggle through a richer `layers_info`
+  map shaped as `{ available, enabled, reason? }` per layer; L12
+  carries `reason = "opt-in hygiene layer"` while it's off. The
+  L9 Coach now exposes `crux_l9_coach::TOTAL_LAYERS = 12`, counts
+  `l12_hygiene` in `active_layer_count`, and derives
+  `unused_layers = TOTAL_LAYERS - active` instead of the old
+  hardcoded 11 ceiling. The Claude Code `PostToolUse` hook
+  (`crux hygiene comments --changed-from-stdin`) no-ops with
+  exit 0 when the toggle is off, so external repos never get
+  surprised; standalone `--check` / `--fix` / `--strip` and the
+  `crux build` hygiene gate keep running regardless. The repo
+  dog-foods the layer via a local `.crux/config.toml` with
+  `[layers] l12_hygiene = true`.
 - **Layer 12 — Comment Hygiene / Slop Guard** (`crux-l12-hygiene`).
   Deterministic scanner + auto-fixer for AI-flavoured source comments.
   Flags decorative banners (`// ───`, `# ===`), `//! Goal:` /
@@ -189,11 +207,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Tests
 
-- **621 pass / 0 fail** on the default feature set (+229 over the
+- **632 pass / 0 fail** on the default feature set (+240 over the
   v0.3.0 baseline of 392). New coverage: 12 unit tests in
   `crux-humanizer` regressions (+16 over 36), stripper /
-  scanner / fixer coverage in `crux-l12-hygiene`, and the
-  `crux build` hygiene-gate smoke.
+  scanner / fixer coverage in `crux-l12-hygiene`, the `crux build`
+  hygiene-gate smoke, plus 10 new regressions pinning the L12
+  audit wiring (default-off behaviour, opt-in toggle flow,
+  dynamic `TOTAL_LAYERS = 12`, and the `layers_info`
+  available/enabled/reason shape).
 
 ### Planned
 
@@ -495,7 +516,8 @@ First public release of CRUX. All ten layers ship with end-to-end coverage.
   L5 (`parse`, `find_symbol`, `impact_radius`),
   L6 (`HashEmbedder::embed`, `index_chunks`, `hybrid_search`).
 
-[Unreleased]: https://github.com/Keradd/crux/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/Keradd/crux/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/Keradd/crux/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Keradd/crux/releases/tag/v0.3.0
 [0.2.0]: https://github.com/Keradd/crux/releases/tag/v0.2.0
 [0.1.1]: https://github.com/Keradd/crux/releases/tag/v0.1.1
