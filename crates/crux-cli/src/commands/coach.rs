@@ -1,10 +1,13 @@
 //! `crux coach` — Layer 9 health snapshot + loop-check + drift-check.
 
+use std::path::PathBuf;
+
 use anyhow::Result;
 use clap::{Args as ClapArgs, Subcommand};
 
+use crux_core::paths::expand_user_path;
 use crux_core::Runtime;
-use crux_l9_coach::{CoachEngine, DriftTracker, LoopDetector};
+use crux_l9_coach::{audit_openclaw, openclaw_category_label, CoachEngine, DriftTracker, LoopDetector};
 
 use super::resolve_project_root;
 use crate::Cli;
@@ -19,6 +22,18 @@ pub enum Cmd {
     Loop(LoopArgs),
     /// Check CLAUDE.md for drift vs last session.
     Drift,
+    /// Audit an OpenClaw directory (port of alex/token-optimizer's
+    /// context-audit). Reports per-component token cost +
+    /// actionable trim/archive/disable recommendations.
+    Openclaw(OpenclawArgs),
+}
+
+#[derive(Debug, Default, ClapArgs)]
+pub struct OpenclawArgs {
+    /// OpenClaw directory to audit. Defaults to `~/.openclaw`, then
+    /// `<project>/.openclaw` if the home dir is missing.
+    #[arg(long)]
+    pub dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Default, ClapArgs)]
@@ -46,6 +61,7 @@ pub fn run(cli: &Cli, cmd: &Cmd) -> Result<()> {
         Cmd::Record(a) => snapshot(cli, a, /*persist=*/ true),
         Cmd::Loop(a) => loop_check(cli, a),
         Cmd::Drift => drift_check(cli),
+        Cmd::Openclaw(a) => openclaw_audit(cli, a),
     }
 }
 
@@ -188,4 +204,90 @@ fn drift_check(cli: &Cli) -> Result<()> {
     println!("  history depth: {}", r.history_depth);
     println!("  changed      : {}", if r.changed { "yes" } else { "no" });
     Ok(())
+}
+
+fn openclaw_audit(cli: &Cli, args: &OpenclawArgs) -> Result<()> {
+    let dir = resolve_openclaw_dir(cli, args)?;
+    let report = audit_openclaw(&dir)?;
+
+    if cli.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+
+    println!("OpenClaw audit — {}", report.openclaw_dir.display());
+    println!(
+        "total: {} tokens (editable {}, ~{:.1}% of 200k window)",
+        report.total_tokens,
+        report.editable_tokens,
+        (report.total_tokens as f64 / 200_000.0) * 100.0
+    );
+    println!(
+        "skills: {} active, {} archived  ·  mcp: {} servers",
+        report.active_skills, report.archived_skills, report.mcp_servers
+    );
+    println!();
+
+    println!("components:");
+    for c in &report.components {
+        println!(
+            "  {:<32} {:>7} tok  [{}]",
+            truncate(&c.name, 32),
+            c.tokens,
+            openclaw_category_label(c.category)
+        );
+    }
+    println!();
+
+    println!("recommendations:");
+    for r in &report.recommendations {
+        println!("  [{}] {}", r.action, r.message);
+    }
+    Ok(())
+}
+
+/// Resolve the OpenClaw directory: explicit `--dir` first, then
+/// `~/.openclaw`, then `<project>/.openclaw`. Returns the first
+/// existing directory.
+fn resolve_openclaw_dir(cli: &Cli, args: &OpenclawArgs) -> Result<PathBuf> {
+    if let Some(p) = &args.dir {
+        if p.is_dir() {
+            return Ok(p.clone());
+        }
+        return Err(anyhow::anyhow!(
+            "openclaw dir does not exist: {}",
+            p.display()
+        ));
+    }
+
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(home_oc) = expand_user_path("~/.openclaw") {
+        candidates.push(home_oc);
+    }
+    let project = resolve_project_root(cli.project.as_deref());
+    candidates.push(project.join(".openclaw"));
+
+    for c in &candidates {
+        if c.is_dir() {
+            return Ok(c.clone());
+        }
+    }
+
+    Err(anyhow::anyhow!(
+        "no OpenClaw dir found. Tried: {}. Pass --dir to override.",
+        candidates
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    ))
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+    out.push('…');
+    out
 }

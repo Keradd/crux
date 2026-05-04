@@ -586,7 +586,9 @@ dependencies = [
  "tempfile",
  "tracing",
  "tree-sitter",
+ "tree-sitter-bash",
  "tree-sitter-javascript",
+ "tree-sitter-lua",
  "tree-sitter-python",
  "tree-sitter-rust",
  "tree-sitter-typescript",
@@ -615,6 +617,7 @@ name = "crux-l7-sandbox"
 version = "0.3.0"
 dependencies = [
  "crux-core",
+ "dirs 5.0.1",
  "landlock",
  "libc",
  "serde",
@@ -2903,10 +2906,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "tree-sitter-bash"
+version = "0.21.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b5244703ad2e08a616d859a0557d7aa290adcd5e0990188a692e628ffe9dce40"
+dependencies = [
+ "cc",
+ "tree-sitter",
+]
+
+[[package]]
 name = "tree-sitter-javascript"
 version = "0.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8710a71bc6779e33811a8067bdda3ed08bed1733296ff915e44faf60f8c533d7"
+dependencies = [
+ "cc",
+ "tree-sitter",
+]
+
+[[package]]
+name = "tree-sitter-lua"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3b9fe6fc87bd480e1943fc1fcb02453fb2da050e4e8ce0daa67d801544046856"
 dependencies = [
  "cc",
  "tree-sitter",

@@ -15,6 +15,7 @@
 
 pub mod contextignore;
 pub mod delta;
+pub mod pin;
 
 use std::path::{Path, PathBuf};
 
@@ -26,6 +27,7 @@ use crux_core::telemetry;
 
 pub use contextignore::ContextIgnore;
 pub use delta::{compute_delta, DeltaResult};
+pub use pin::{PinReport, PrefetchReport};
 
 // ─────────────────────────────────────────────────────────────────────────
 // Public types
@@ -84,6 +86,13 @@ pub struct ReadCacheManager<'c> {
 impl<'c> ReadCacheManager<'c> {
     pub fn new(conn: &'c Connection) -> Self {
         Self { conn }
+    }
+
+    /// Direct access to the underlying connection. Used by sibling
+    /// modules (`pin`) that need to issue their own statements without
+    /// duplicating the storage layer.
+    pub(crate) fn conn(&self) -> &Connection {
+        self.conn
     }
 
     /// Backwards-compatible entry point: contextignore disabled, delta off.

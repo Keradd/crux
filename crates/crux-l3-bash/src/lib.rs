@@ -35,6 +35,7 @@ mod inline_tests {
         ("cargo", include_str!("../filters/cargo.toml")),
         ("npm", include_str!("../filters/npm.toml")),
         ("jest", include_str!("../filters/jest.toml")),
+        ("openclaw", include_str!("../filters/openclaw.toml")),
         ("generic", include_str!("../filters/generic.toml")),
     ];
 

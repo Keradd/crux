@@ -13,11 +13,16 @@ use crate::pipeline::{Filter, FilterOutput, OutputKind};
 use crate::spec::{FilterFile, FilterSpec};
 
 // Built-in filter TOML — embedded so the binary is self-sufficient.
+//
+// Order matters: earlier entries are tried first by `FilterEngine::find`.
+// Tool-specific filters (git/cargo/openclaw/...) must precede `generic`,
+// which is the last-resort catch-all.
 const BUILTIN_FILTERS: &[(&str, &str)] = &[
     ("git", include_str!("../filters/git.toml")),
     ("cargo", include_str!("../filters/cargo.toml")),
     ("npm", include_str!("../filters/npm.toml")),
     ("jest", include_str!("../filters/jest.toml")),
+    ("openclaw", include_str!("../filters/openclaw.toml")),
     ("generic", include_str!("../filters/generic.toml")),
 ];
 

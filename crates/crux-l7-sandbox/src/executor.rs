@@ -30,6 +30,7 @@ use std::time::{Duration, Instant};
 
 use crux_core::error::{CruxError, Result};
 
+use crate::permissions::PermDecision;
 use crate::types::{ExecRequest, ExecResult, IsolationLevel, RuntimeKind};
 
 const ALLOWED_ENV_KEYS: &[&str] = &["PATH", "HOME", "LANG", "TZ"];
@@ -43,6 +44,24 @@ impl Executor {
     }
 
     pub fn execute(&self, req: &ExecRequest) -> Result<ExecResult> {
+        // Agent-permission gate (Layer 7 deny-list sync). Refuses to
+        // spawn if the caller attached a `Permissions` bundle that
+        // matches the runtime+code pair under a deny rule. Bypassed
+        // entirely when `req.permissions` is `None` so the legacy
+        // contract is preserved.
+        if let Some(perms) = &req.permissions {
+            if let PermDecision::Deny(rule) = perms.evaluate(req.runtime, &req.code) {
+                return Err(CruxError::other(format!(
+                    "denied by agent permission rule {} ({}/{}): {} {}",
+                    rule.raw,
+                    rule.source.label(),
+                    rule.scope.label(),
+                    "blocked by L7 sandbox before spawn —",
+                    "remove or override the rule to proceed"
+                )));
+            }
+        }
+
         let interpreter = req.runtime.default_interpreter();
         let mut cmd = match req.runtime {
             RuntimeKind::Python => {
@@ -512,6 +531,101 @@ mod tests {
         let res = exec.execute(&req).unwrap();
         assert_eq!(res.isolation_applied, Vec::<String>::new());
         assert!(res.stdout.contains("ok"));
+    }
+
+    #[test]
+    fn agent_permission_deny_rule_blocks_before_spawn() {
+        // No `require_bash` guard — the deny check fires before we
+        // attempt to exec anything, so the test runs even on hosts
+        // without bash.
+        use crate::permissions::{PermRule, PermScope, PermSource, Permissions};
+        let exec = Executor::new();
+        let perms = Permissions::new(
+            vec![
+                PermRule::parse("Bash(rm -rf *)", PermSource::ClaudeCode, PermScope::Global)
+                    .unwrap(),
+            ],
+            vec![],
+        );
+        let req = ExecRequest::new(RuntimeKind::Bash, "rm -rf /tmp/x")
+            .with_permissions(perms);
+        let err = exec.execute(&req).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("denied by agent permission rule"),
+            "missing deny preamble: {msg}"
+        );
+        assert!(msg.contains("Bash(rm -rf *)"), "rule should echo: {msg}");
+        assert!(msg.contains("claude-code"), "source label missing: {msg}");
+    }
+
+    #[test]
+    fn agent_permission_does_not_block_unrelated_runtime() {
+        // A `Bash(...)` deny must NOT affect Python execution. Without
+        // the runtime-aware mapping in PermRule::maps_to_runtime, this
+        // would over-block.
+        if !require_python() {
+            return;
+        }
+        use crate::permissions::{PermRule, PermScope, PermSource, Permissions};
+        let exec = Executor::new();
+        let perms = Permissions::new(
+            vec![
+                PermRule::parse("Bash(rm -rf *)", PermSource::ClaudeCode, PermScope::Global)
+                    .unwrap(),
+            ],
+            vec![],
+        );
+        let req = ExecRequest::new(RuntimeKind::Python, "print('ok')")
+            .with_permissions(perms);
+        let res = exec.execute(&req).unwrap();
+        assert_eq!(res.exit_code, Some(0));
+        assert!(res.stdout.contains("ok"));
+    }
+
+    #[test]
+    fn agent_permission_allow_overrides_deny() {
+        if !require_bash() {
+            return;
+        }
+        use crate::permissions::{PermRule, PermScope, PermSource, Permissions};
+        let exec = Executor::new();
+        let perms = Permissions::new(
+            vec![
+                PermRule::parse("Bash(rm *)", PermSource::ClaudeCode, PermScope::Global).unwrap(),
+            ],
+            vec![
+                // Project-scoped allow re-enables a specific rm shape.
+                PermRule::parse("Bash(rm /tmp/scratch*)", PermSource::ClaudeCode, PermScope::Project)
+                    .unwrap(),
+            ],
+        );
+        // Need a real (and harmless) rm target: create + delete a
+        // tempfile we own, asserting the allow rule wins over deny.
+        let dir = tempfile::tempdir().unwrap();
+        let scratch = dir.path().join("scratch_l7_perm_test");
+        std::fs::write(&scratch, "x").unwrap();
+        let code = format!("rm /tmp/scratch_nonexistent_l7 2>/dev/null; rm '{}'", scratch.display());
+        // The deny rule's pattern (`rm `) matches; the allow rule's
+        // pattern (`rm /tmp/scratch`) also matches. Allow wins.
+        let req = ExecRequest::new(RuntimeKind::Bash, code).with_permissions(perms);
+        let res = exec.execute(&req).unwrap();
+        // Real rm of the tempfile should succeed (exit 0).
+        assert_eq!(res.exit_code, Some(0), "stderr: {}", res.stderr);
+    }
+
+    #[test]
+    fn no_permissions_attached_skips_check() {
+        if !require_bash() {
+            return;
+        }
+        let exec = Executor::new();
+        // A request with `permissions = None` must behave EXACTLY like
+        // the legacy contract — no rule lookups, no overhead, no risk
+        // of blocking benign code that happens to contain `rm` substrings.
+        let req = ExecRequest::new(RuntimeKind::Bash, "echo 'rm -rf /' # printed not run");
+        let res = exec.execute(&req).unwrap();
+        assert_eq!(res.exit_code, Some(0));
     }
 
     #[cfg(target_os = "linux")]

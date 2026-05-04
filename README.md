@@ -97,9 +97,27 @@ crux --help
 ```bash
 git clone https://github.com/Keradd/crux.git
 cd crux
+
+# Default build — offline, ~11 MB stripped, no network at runtime.
+# Layer 6 ships the deterministic `HashEmbedder` for the dense ranker.
 cargo build --release
-# binary at ./target/release/crux (~11 MB stripped on Linux x86_64)
+
+# "crux-full" build — adds the ONNX-backed `FastEmbedder` (BGE-small-en-v1.5
+# by default, ~30 MB model downloaded at first run from Hugging Face).
+# Required if you want real semantic dense retrieval; everything else
+# (BM25, RRF, fuzzy, AST graph, …) works identically with either build.
+cargo build --release --features full      # alias for `--features fastembed`
 ```
+
+After building with `--features full`, opt the runtime in via
+`[layer.l6] embedding_provider = "fastembed"` in `~/.crux/config.toml`
+and run `crux reindex --force` once to populate the new vectors.
+Existing hash-indexed rows stay in the DB untouched — they're partitioned
+by `(provider, model, dim)` so switching back is a single config flip
+(no migration, no `--force` reindex needed).
+
+`crux doctor` flags the mismatch when the config selects `fastembed`
+but the binary was built without the feature.
 
 ### Requirements (source builds)
 
@@ -107,6 +125,8 @@ cargo build --release
 - SQLite is bundled via `rusqlite` — no system dependency.
 - Optional: `--features crux-l7-sandbox/seccomp` enables Linux seccomp BPF
   syscall filtering (requires kernel ≥ 3.5).
+- Optional: `--features full` enables the L6 fastembed embedder (~30 MB
+  ONNX runtime + model archive, downloaded on first use).
 
 ---
 

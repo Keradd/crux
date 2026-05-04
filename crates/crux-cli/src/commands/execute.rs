@@ -8,7 +8,9 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use clap::Args as ClapArgs;
 
-use crux_l7_sandbox::{ExecRequest, Executor, IsolationLevel, RuntimeKind};
+use crux_l7_sandbox::{
+    agent_perms, ExecRequest, Executor, IsolationLevel, Permissions, RuntimeKind,
+};
 
 use super::resolve_project_root;
 use crate::Cli;
@@ -49,6 +51,15 @@ pub struct ExecuteArgs {
     /// portable guarantees. Non-Linux targets fall back to portable.
     #[arg(long, default_value = "portable")]
     pub isolate: String,
+
+    /// Load `~/.claude/settings.json` + `~/.openclaw/openclaw.json`
+    /// (plus their per-project equivalents) and refuse to spawn if the
+    /// runtime + code body matches any unioned `Bash(...)` / `exec`
+    /// deny rule. Off by default to preserve the legacy contract;
+    /// opt in for parity with how Claude Code / OpenClaw enforce
+    /// `permissions.deny` on tool calls.
+    #[arg(long = "check-agent-perms")]
+    pub check_agent_perms: bool,
 }
 
 pub fn run(cli: &Cli, args: &ExecuteArgs) -> Result<()> {
@@ -90,6 +101,12 @@ pub fn run(cli: &Cli, args: &ExecuteArgs) -> Result<()> {
         )
     })?;
 
+    let permissions: Option<Permissions> = if args.check_agent_perms {
+        Some(agent_perms::load_for_project(Some(&project)))
+    } else {
+        None
+    };
+
     let req = ExecRequest {
         runtime,
         code,
@@ -99,6 +116,7 @@ pub fn run(cli: &Cli, args: &ExecuteArgs) -> Result<()> {
         env,
         inherit_env: args.inherit_env,
         isolation,
+        permissions,
     };
 
     let exec = Executor::new();

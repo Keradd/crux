@@ -12,6 +12,7 @@ crux-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
+dirs.workspace = true
 
 # L7.5 — hard isolation extras. `libc` is only pulled on Linux targets
 # where it is used to apply rlimits in the child's pre-exec hook.

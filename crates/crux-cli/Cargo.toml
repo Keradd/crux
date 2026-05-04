@@ -33,3 +33,20 @@ toml.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 chrono.workspace = true
+
+# ── Feature gates ─────────────────────────────────────────────────────
+#
+# Default build (`cargo build`) ships the offline `HashEmbedder` only.
+# Build with `--features full` (or `--features fastembed`) to pull in
+# the ONNX-backed `FastEmbedder`. The on-disk schema partitions vectors
+# by `(provider, model, dim)`, so existing hash-indexed rows stay valid
+# after switching — but the agent must run `crux reindex --force` to
+# populate fastembed embeddings before any dense search will use them.
+[features]
+default = []
+fastembed = ["crux-l6-search/fastembed"]
+# `full` is the conventional "everything turned on" alias users can
+# remember without grepping the Cargo manifests. New opt-in heavy
+# features (e.g. seccomp on Linux) should be added here, not silently
+# enabled by default.
+full = ["fastembed"]

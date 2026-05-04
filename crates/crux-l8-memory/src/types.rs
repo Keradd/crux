@@ -6,7 +6,9 @@ use std::str::FromStr;
 /// Eight observation kinds, copied from token-savior. The decay table in
 /// `decay_config` is keyed on these strings; renaming a variant here
 /// requires a migration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ObservationKind {
     /// User preference / persistent personal note.

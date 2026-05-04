@@ -12,6 +12,7 @@
 //! this crate and on each other only via their public APIs.
 
 pub mod config;
+pub mod config_watch;
 pub mod db;
 pub mod error;
 pub mod merkle;
@@ -20,6 +21,7 @@ pub mod telemetry;
 pub mod tokens;
 
 pub use config::{Config, LayerMode, LoadedConfig};
+pub use config_watch::{ConfigWatcher, WatcherHandle, DEFAULT_POLL_INTERVAL};
 pub use error::{CruxError, Result};
 
 /// Convenience initializer used by the CLI: load config, open DB.

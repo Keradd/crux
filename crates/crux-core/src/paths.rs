@@ -68,6 +68,29 @@ pub fn path_is_within(child: &Path, parent: &Path) -> bool {
     }
 }
 
+/// Expand a leading `~` or `~/` (and `$HOME`) in a string path against
+/// the current user's home directory. Paths without a tilde are returned
+/// verbatim. `~user` (other-user expansion) is intentionally **not**
+/// supported — we only resolve the running user's home.
+///
+/// Returns `None` if `$HOME` cannot be resolved AND the path actually
+/// needs expansion. Pure-relative or absolute paths always succeed.
+pub fn expand_user_path(s: &str) -> Option<PathBuf> {
+    if s == "~" {
+        return dirs::home_dir();
+    }
+    if let Some(rest) = s.strip_prefix("~/") {
+        return dirs::home_dir().map(|h| h.join(rest));
+    }
+    if let Some(rest) = s.strip_prefix("$HOME/") {
+        return dirs::home_dir().map(|h| h.join(rest));
+    }
+    if s == "$HOME" {
+        return dirs::home_dir();
+    }
+    Some(PathBuf::from(s))
+}
+
 // Tiny helper trait so we don't drag a dep just for canonicalize.
 trait Absolutize {
     fn absolutize(&self) -> std::io::Result<PathBuf>;
@@ -132,5 +155,26 @@ mod tests {
         std::fs::create_dir_all(&inner).unwrap();
         assert!(path_is_within(&inner, dir.path()));
         assert!(!path_is_within(dir.path(), &inner));
+    }
+
+    #[test]
+    fn expand_user_path_handles_tilde_and_dollar_home() {
+        let home = dirs::home_dir().expect("$HOME required for this test");
+        assert_eq!(expand_user_path("~").unwrap(), home);
+        assert_eq!(expand_user_path("~/foo/bar").unwrap(), home.join("foo/bar"));
+        assert_eq!(expand_user_path("$HOME").unwrap(), home);
+        assert_eq!(
+            expand_user_path("$HOME/.openclaw").unwrap(),
+            home.join(".openclaw")
+        );
+        // Non-tilde paths are returned verbatim.
+        assert_eq!(
+            expand_user_path("/etc/hosts").unwrap(),
+            PathBuf::from("/etc/hosts")
+        );
+        assert_eq!(
+            expand_user_path("relative/dir").unwrap(),
+            PathBuf::from("relative/dir")
+        );
     }
 }

@@ -122,6 +122,13 @@ pub enum Language {
     Python,
     TypeScript,
     JavaScript,
+    /// Phase 3 / Task G — tree-sitter-lua.
+    Lua,
+    /// Phase 3 / Task G — tree-sitter-bash. Routed for `.sh` and
+    /// `.bash` files. Pure-dotfile rc scripts (`.bashrc`, `.bash_profile`)
+    /// have no `Path::extension()` so they're not auto-indexed today;
+    /// rename them or include them via an explicit indexer entry.
+    Bash,
 }
 
 impl Language {
@@ -131,6 +138,8 @@ impl Language {
             "py" | "pyi" => Self::Python,
             "ts" | "tsx" => Self::TypeScript,
             "js" | "jsx" | "mjs" | "cjs" => Self::JavaScript,
+            "lua" => Self::Lua,
+            "sh" | "bash" | "bashrc" | "bash_profile" => Self::Bash,
             _ => return None,
         })
     }
@@ -141,6 +150,8 @@ impl Language {
             Language::Python => "python",
             Language::TypeScript => "typescript",
             Language::JavaScript => "javascript",
+            Language::Lua => "lua",
+            Language::Bash => "bash",
         }
     }
 }

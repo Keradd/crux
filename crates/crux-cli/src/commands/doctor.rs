@@ -45,7 +45,7 @@ pub fn run(cli: &Cli) -> Result<()> {
     }
 
     // Try to open the DB
-    match Runtime::open(project_opt.clone()) {
+    let runtime = match Runtime::open(project_opt.clone()) {
         Ok(rt) => {
             let db_path = rt
                 .config
@@ -54,10 +54,37 @@ pub fn run(cli: &Cli) -> Result<()> {
                 .clone()
                 .unwrap_or(paths::db_path()?);
             println!("database  : ok at {}", db_path.display());
+            Some(rt)
         }
         Err(e) => {
             ok = false;
             println!("database  : ERROR — {}", e);
+            None
+        }
+    };
+
+    // Embedder build vs. configured provider. Agents that flip to
+    // `embedding_provider = "fastembed"` in TOML without rebuilding the
+    // binary get a clear diagnostic here instead of a runtime error on
+    // first search.
+    let built_fastembed = cfg!(feature = "fastembed");
+    let embedder_label = if built_fastembed {
+        "fastembed (full build)"
+    } else {
+        "hash (default build)"
+    };
+    println!("embedder  : {}", embedder_label);
+    if let Some(rt) = &runtime {
+        let provider = rt.config.layer.l6.embedding_provider.as_str();
+        if provider == "fastembed" && !built_fastembed {
+            ok = false;
+            println!("  ERROR — config selects fastembed but this binary was built without it.");
+            println!("          Rebuild with `cargo build --release --features full` (or");
+            println!("          `--features fastembed`) or set `[layer.l6] embedding_provider`");
+            println!(
+                "          to `\"hash\"` in {}.",
+                paths::global_config_path()?.display(),
+            );
         }
     }
 

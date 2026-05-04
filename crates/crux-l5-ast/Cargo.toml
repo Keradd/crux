@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "CRUX Layer 5: tree-sitter AST graph (Rust + Python + TypeScript)."
+description = "CRUX Layer 5: tree-sitter AST graph (Rust + Python + TS/JS + Lua + Bash)."
 
 [dependencies]
 crux-core.workspace = true
@@ -25,6 +25,11 @@ tree-sitter-rust = "0.21"
 tree-sitter-python = "0.21"
 tree-sitter-typescript = "0.21"
 tree-sitter-javascript = "0.21"
+# Lua + Bash were added in Phase 3 / Task G. Keep the version pins
+# narrow so a later tree-sitter major bump can't silently break the
+# `language()` ABI.
+tree-sitter-lua = "0.1"
+tree-sitter-bash = "0.21"
 
 # File walking — same lib `claude-context` and `code-review-graph` use.
 ignore = "0.4"

@@ -1044,6 +1044,12 @@ fn execute(runtime: &Runtime, args: &Value) -> Result<String, String> {
         env: std::collections::HashMap::new(),
         inherit_env,
         isolation,
+        // MCP transport currently does not surface a per-call
+        // `permissions` knob — the host agent is expected to enforce
+        // its own deny-list before dispatching the call. CRUX still
+        // honors a permissions bundle when constructed via the CLI
+        // `--check-agent-perms` path.
+        permissions: None,
     };
     let exec = Executor::new();
     let res = exec.execute(&req).map_err(|e| e.to_string())?;

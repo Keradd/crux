@@ -18,6 +18,12 @@
 //! ```json
 //! { "decision": "allow" | "block", "message": "..." }
 //! ```
+//!
+//! `crux hook openclaw-compact` is the OpenClaw-side trigger for L11
+//! compaction. The event mirrors Claude Code's `PreCompact` payload
+//! (a session id, optional cwd, optional trigger source) and routes
+//! into the same `DigestEngine::compact` path that backs `crux compact`
+//! — so OpenClaw stays a *trigger source*, not a second code path.
 
 use std::io::Read;
 use std::path::PathBuf;
@@ -42,6 +48,11 @@ pub enum Cmd {
     /// Session lifecycle hooks (placeholder).
     SessionStart,
     SessionEnd,
+    /// OpenClaw compaction trigger. Reads a JSON event from stdin and
+    /// runs `DigestEngine::compact` for the event's `session_id`. The
+    /// hook is a trigger source only — the actual roll-up logic is
+    /// shared with `crux compact`.
+    OpenclawCompact,
 }
 
 pub fn run(cli: &Cli, cmd: &Cmd) -> Result<()> {
@@ -50,6 +61,7 @@ pub fn run(cli: &Cli, cmd: &Cmd) -> Result<()> {
         Cmd::PostTool => post_tool(cli),
         Cmd::SessionStart => not_yet("session-start", "Phase 6"),
         Cmd::SessionEnd => not_yet("session-end", "Phase 6"),
+        Cmd::OpenclawCompact => openclaw_compact(cli),
     }
 }
 
@@ -102,6 +114,25 @@ struct ToolResponse {
     error: Option<String>,
     #[serde(default)]
     is_error: Option<bool>,
+}
+
+/// Subset of the OpenClaw / Claude Code `PreCompact` event we care
+/// about. We accept both `snake_case` (Claude Code wire) and
+/// `camelCase` (OpenClaw plugin) field names so the same hook handler
+/// works for either trigger source.
+#[derive(Debug, Default, Deserialize)]
+struct CompactEvent {
+    #[serde(default, alias = "sessionId")]
+    session_id: String,
+    /// Optional working directory for the host conversation. When
+    /// present we prefer it over the CLI `--project` flag because the
+    /// hook may fire from a different cwd than the project root.
+    #[serde(default, alias = "projectDir", alias = "project_dir")]
+    cwd: Option<String>,
+    /// `"manual"` / `"auto"` on Claude Code; OpenClaw uses the same
+    /// strings. Surfaced in the response message for observability.
+    #[serde(default)]
+    trigger: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -254,6 +285,114 @@ fn pre_tool(cli: &Cli) -> Result<()> {
 // post-tool
 // ─────────────────────────────────────────────────────────────────────────
 
+/// Outcome of [`perform_compact`]. Mirrors the shape `crux compact`
+/// already emits but stays a private struct because the hook protocol
+/// doesn't promise stable JSON for it (callers should rely on `crux
+/// compact --json` for machine output).
+#[derive(Debug, Clone)]
+struct CompactOutcome {
+    session_id: String,
+    digest_id: i64,
+    event_count: i64,
+    pending_before: i64,
+    trigger: Option<String>,
+    skipped: Option<&'static str>,
+}
+
+impl CompactOutcome {
+    fn skipped(session_id: String, event: &CompactEvent, reason: &'static str) -> Self {
+        Self {
+            session_id,
+            digest_id: 0,
+            event_count: 0,
+            pending_before: 0,
+            trigger: event.trigger.clone(),
+            skipped: Some(reason),
+        }
+    }
+
+    fn message(&self) -> String {
+        if let Some(reason) = self.skipped {
+            return format!("crux: openclaw-compact skipped — {reason}");
+        }
+        let trig = self.trigger.as_deref().unwrap_or("openclaw");
+        format!(
+            "crux: compacted session={} via {} → digest #{} ({} event(s), {} pending before)",
+            self.session_id, trig, self.digest_id, self.event_count, self.pending_before,
+        )
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// openclaw-compact
+// ────────────────────────────────────────────────────────────────────────
+
+fn openclaw_compact(cli: &Cli) -> Result<()> {
+    let event =
+        read_compact_event_from_stdin().context("reading compact hook event from stdin")?;
+
+    // Event `cwd` wins over `--project` because the hook runs from the
+    // host process's cwd, which may not be the CRUX project root.
+    let project = match event.cwd.as_deref().filter(|s| !s.is_empty()) {
+        Some(dir) => PathBuf::from(dir),
+        None => resolve_project_root(cli.project.as_deref()),
+    };
+    let runtime = Runtime::open(Some(project.clone())).context("opening CRUX runtime")?;
+
+    let outcome = perform_compact(&runtime, &event);
+    respond(&HookResponse {
+        decision: "allow",
+        message: Some(outcome.message()),
+    });
+    Ok(())
+}
+
+/// Runtime adapter for [`compact_session`].
+fn perform_compact(runtime: &Runtime, event: &CompactEvent) -> CompactOutcome {
+    let session_id = normalize_session_id(&event.session_id);
+    if !runtime.config.layers.l11_digest {
+        return CompactOutcome::skipped(session_id, event, "l11_digest layer disabled");
+    }
+    let engine = DigestEngine::new(&runtime.conn, runtime.config.layer.l11.clone());
+    compact_session(&engine, event)
+}
+
+/// Normalize the event's `session_id`: empty / whitespace fallback to
+/// `default`, otherwise trimmed.
+fn normalize_session_id(raw: &str) -> String {
+    if raw.trim().is_empty() {
+        "default".to_string()
+    } else {
+        raw.trim().to_string()
+    }
+}
+
+/// Pure core: takes a constructed [`DigestEngine`] + parsed event and
+/// runs the compaction. Factored out so unit tests can drive it
+/// against an in-memory DB without standing up a full `Runtime`.
+fn compact_session(engine: &DigestEngine<'_>, event: &CompactEvent) -> CompactOutcome {
+    let session_id = normalize_session_id(&event.session_id);
+    let pending_before = engine.pending_count(&session_id).unwrap_or(0);
+    match engine.compact(&session_id) {
+        Ok(digest) => CompactOutcome {
+            session_id,
+            digest_id: digest.id,
+            event_count: digest.event_count,
+            pending_before,
+            trigger: event.trigger.clone(),
+            skipped: None,
+        },
+        Err(_) => CompactOutcome {
+            session_id,
+            digest_id: 0,
+            event_count: 0,
+            pending_before,
+            trigger: event.trigger.clone(),
+            skipped: Some("compact failed"),
+        },
+    }
+}
+
 fn post_tool(cli: &Cli) -> Result<()> {
     let project = resolve_project_root(cli.project.as_deref());
     let runtime = Runtime::open(Some(project.clone()))?;
@@ -388,6 +527,20 @@ fn read_event_from_stdin() -> Result<ToolEvent> {
     Ok(event)
 }
 
+fn read_compact_event_from_stdin() -> Result<CompactEvent> {
+    let mut buf = String::new();
+    std::io::stdin().read_to_string(&mut buf)?;
+    parse_compact_event(&buf)
+}
+
+fn parse_compact_event(raw: &str) -> Result<CompactEvent> {
+    if raw.trim().is_empty() {
+        return Ok(CompactEvent::default());
+    }
+    serde_json::from_str(raw)
+        .with_context(|| format!("compact event was not valid JSON: {}", truncate(raw, 200)))
+}
+
 fn respond(resp: &HookResponse<'_>) {
     let s = serde_json::to_string(resp).unwrap_or_else(|_| "{\"decision\":\"allow\"}".into());
     println!("{}", s);
@@ -407,4 +560,193 @@ fn not_yet(name: &str, phase: &str) -> Result<()> {
         name,
         phase
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crux_core::config::L11Config;
+    use crux_l11_digest::{DigestEngine, TurnEvent, TurnStatus};
+
+    fn ev(session: &str, tool: &str) -> TurnEvent {
+        TurnEvent {
+            session_id: session.into(),
+            project_root: "/p".into(),
+            agent_id: Some("default".into()),
+            tool_name: tool.into(),
+            target: Some("x".into()),
+            status: TurnStatus::Ok,
+            original_tokens: 0,
+            compressed_tokens: 0,
+            summary: format!("{tool} x"),
+        }
+    }
+
+    fn cfg() -> L11Config {
+        L11Config {
+            auto_compact_every_n: 0,
+            mirror_to_l8: false,
+            ..L11Config::default()
+        }
+    }
+
+    // ── parse_compact_event ─────────────────────────────────────────
+
+    #[test]
+    fn parse_empty_returns_default_event() {
+        let ev = parse_compact_event("").unwrap();
+        assert!(ev.session_id.is_empty());
+        assert!(ev.cwd.is_none());
+        assert!(ev.trigger.is_none());
+
+        let ev_ws = parse_compact_event("   \n\t  ").unwrap();
+        assert!(ev_ws.session_id.is_empty());
+    }
+
+    #[test]
+    fn parse_snake_case_fields() {
+        let raw = r#"{"session_id":"sess-1","cwd":"/proj","trigger":"manual"}"#;
+        let ev = parse_compact_event(raw).unwrap();
+        assert_eq!(ev.session_id, "sess-1");
+        assert_eq!(ev.cwd.as_deref(), Some("/proj"));
+        assert_eq!(ev.trigger.as_deref(), Some("manual"));
+    }
+
+    #[test]
+    fn parse_camel_case_aliases() {
+        // OpenClaw plugin shape
+        let raw = r#"{"sessionId":"sess-2","projectDir":"/proj","trigger":"auto"}"#;
+        let ev = parse_compact_event(raw).unwrap();
+        assert_eq!(ev.session_id, "sess-2");
+        assert_eq!(ev.cwd.as_deref(), Some("/proj"));
+        assert_eq!(ev.trigger.as_deref(), Some("auto"));
+    }
+
+    #[test]
+    fn parse_project_dir_snake_alias() {
+        let raw = r#"{"session_id":"s","project_dir":"/proj"}"#;
+        let ev = parse_compact_event(raw).unwrap();
+        assert_eq!(ev.cwd.as_deref(), Some("/proj"));
+    }
+
+    #[test]
+    fn parse_invalid_json_errors() {
+        let err = parse_compact_event("not json").unwrap_err();
+        assert!(err.to_string().contains("compact event was not valid JSON"));
+    }
+
+    // ── normalize_session_id ────────────────────────────────────────
+
+    #[test]
+    fn normalize_session_defaults_when_empty() {
+        assert_eq!(normalize_session_id(""), "default");
+        assert_eq!(normalize_session_id("   \n\t"), "default");
+    }
+
+    #[test]
+    fn normalize_session_trims_whitespace() {
+        assert_eq!(normalize_session_id("  spaced  "), "spaced");
+    }
+
+    // ── CompactOutcome ──────────────────────────────────────────────
+
+    #[test]
+    fn outcome_skipped_message_format() {
+        let event = CompactEvent {
+            session_id: "s".into(),
+            ..CompactEvent::default()
+        };
+        let out = CompactOutcome::skipped("s".into(), &event, "l11_digest layer disabled");
+        assert_eq!(out.skipped, Some("l11_digest layer disabled"));
+        assert_eq!(out.session_id, "s");
+        assert!(out.message().contains("l11_digest layer disabled"));
+        assert!(out.message().starts_with("crux: openclaw-compact skipped"));
+    }
+
+    // ── compact_session core ────────────────────────────────────────
+
+    #[test]
+    fn compact_defaults_session_when_empty() {
+        let conn = crux_core::db::open_in_memory().unwrap();
+        let engine = DigestEngine::new(&conn, cfg());
+        let event = CompactEvent::default();
+        let out = compact_session(&engine, &event);
+        assert_eq!(out.session_id, "default");
+        // No pending events → digest still created with event_count=0,
+        // matching the `crux compact` semantics.
+        assert!(out.skipped.is_none());
+        assert_eq!(out.event_count, 0);
+    }
+
+    #[test]
+    fn compact_rolls_up_pending_events() {
+        let conn = crux_core::db::open_in_memory().unwrap();
+        let engine = DigestEngine::new(&conn, cfg());
+        engine.record(&ev("sess-1", "Read")).unwrap();
+        engine.record(&ev("sess-1", "Edit")).unwrap();
+
+        let event = CompactEvent {
+            session_id: "sess-1".into(),
+            trigger: Some("auto".into()),
+            ..CompactEvent::default()
+        };
+        let out = compact_session(&engine, &event);
+
+        assert!(out.skipped.is_none());
+        assert_eq!(out.session_id, "sess-1");
+        assert_eq!(out.event_count, 2);
+        assert_eq!(out.pending_before, 2);
+        assert!(out.digest_id > 0);
+        let msg = out.message();
+        assert!(msg.contains("session=sess-1"));
+        assert!(msg.contains("via auto"));
+        assert!(msg.contains(&format!("digest #{}", out.digest_id)));
+    }
+
+    #[test]
+    fn compact_trims_session_whitespace() {
+        let conn = crux_core::db::open_in_memory().unwrap();
+        let engine = DigestEngine::new(&conn, cfg());
+        let event = CompactEvent {
+            session_id: "  spaced  ".into(),
+            ..CompactEvent::default()
+        };
+        let out = compact_session(&engine, &event);
+        assert_eq!(out.session_id, "spaced");
+    }
+
+    #[test]
+    fn compact_message_default_trigger_label() {
+        // No trigger field in event → message falls back to "openclaw".
+        let conn = crux_core::db::open_in_memory().unwrap();
+        let engine = DigestEngine::new(&conn, cfg());
+        engine.record(&ev("s2", "Bash")).unwrap();
+        let event = CompactEvent {
+            session_id: "s2".into(),
+            ..CompactEvent::default()
+        };
+        let out = compact_session(&engine, &event);
+        assert!(out.message().contains("via openclaw"));
+    }
+
+    #[test]
+    fn compact_idempotent_when_no_new_events() {
+        // Calling twice in a row: second call has 0 pending events but
+        // still succeeds (matches `crux compact` behaviour).
+        let conn = crux_core::db::open_in_memory().unwrap();
+        let engine = DigestEngine::new(&conn, cfg());
+        engine.record(&ev("s3", "Read")).unwrap();
+        let event = CompactEvent {
+            session_id: "s3".into(),
+            ..CompactEvent::default()
+        };
+        let first = compact_session(&engine, &event);
+        assert_eq!(first.event_count, 1);
+        let second = compact_session(&engine, &event);
+        assert!(second.skipped.is_none());
+        assert_eq!(second.event_count, 0);
+        assert_eq!(second.pending_before, 0);
+        // Each compaction inserts a fresh digest row, so ids differ.
+        assert_ne!(first.digest_id, second.digest_id);
+    }
 }

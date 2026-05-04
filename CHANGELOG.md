@@ -7,6 +7,86 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Hot reload `crux.toml`** (Phase 4 Task I). `crux-core` now ships a
+  `ConfigWatcher` (in `crux_core::config_watch`) that holds a published
+  `Config` behind an `Arc<RwLock<_>>` and re-parses both the global
+  (`~/.crux/config.toml`) and project (`.crux/config.toml`) files when
+  their on-disk mtime moves. Atomic swap under a write lock means
+  readers never see a torn config. A malformed mid-session edit is
+  logged and ignored so the previously-published config stays active.
+  - **MCP server wire-up**: `crux mcp` builds a watcher from its
+    `Runtime` at startup (via `ConfigWatcher::from_runtime`, zero extra
+    disk I/O) and checks it between every JSON-RPC request. Edits to
+    layer toggles land on the very next `tools/call` without needing
+    to restart the long-lived MCP process. Log line
+    `crux.toml changed on disk — reloaded config` confirms a swap.
+  - **Pull + push consumption**: callers outside the MCP loop can tick
+    manually (`ConfigWatcher::tick`) or hand the watcher to
+    `spawn_polling(interval)` for a background thread (1s default
+    cadence) — drop the returned `WatcherHandle` to join cleanly.
+  - 14 new unit tests (10 in `config_watch.rs`, 4 in `crux-mcp`
+    `server.rs` covering `reload_if_changed` + the extracted generic
+    `run_loop`).
+
+- **L7 sandbox deny-list sync with Claude Code / OpenClaw**
+  (Phase 4 Task H). `crux execute` can now consult the same
+  `~/.claude/settings.json` / `~/.openclaw/openclaw.json` permission
+  blocks the agents themselves honour, plus their per-project
+  overrides, before spawning a runtime.
+  - New modules in `crux-l7-sandbox`: `permissions.rs` parses
+    `Tool(pattern)` entries and maps them to runtime kinds;
+    `agent_perms.rs` loads the global + project files and merges
+    them; `executor.rs` grew a pre-spawn deny check driven by
+    `req.permissions`.
+  - New CLI flag `crux execute --check-agent-perms` opts in.
+    `crux audit --json` now includes an `agent_permissions` block
+    so observers can see which tool patterns are currently denied
+    or allowed.
+  - 29 new unit tests (16 permissions, 9 agent_perms, 4 executor).
+
+- **`crux audit --watch`** (Phase 4 Task J). Streaming health-snapshot
+  feed, NDJSON in `--json` mode and an ANSI-cleared text frame
+  otherwise. `--interval-ms` governs cadence (default 5 s, floor 200 ms
+  enforced by `clamp_interval_ms`). Helpers `build_payload`,
+  `clamp_interval_ms`, and generic `watch_step<W>` factored for unit
+  tests (7 new tests in `crux-cli`).
+
+- **`crux hook openclaw-compact`** — OpenClaw / Claude Code `PreCompact`
+  trigger that reads a JSON event from stdin (`session_id`, optional
+  `cwd`, optional `trigger`) and forwards into the same
+  `DigestEngine::compact` path that backs `crux compact`. Single
+  compaction code path; OpenClaw is a trigger source only. Accepts both
+  `snake_case` and `camelCase` field aliases. 13 new unit tests cover
+  parsing + the compaction core.
+- **`crux-cli` build features** — `cargo build --features full` (alias
+  `--features fastembed`) bundles the ONNX-backed L6 embedder. Default
+  build still ships the offline `HashEmbedder`. `crux doctor` now reports
+  the embedder build mode and surfaces a clear error when the config
+  selects `fastembed` against a binary that wasn't compiled with the
+  feature. The on-disk schema partitions vectors by
+  `(provider, model, dim)`, so existing hash-indexed rows stay valid
+  after switching providers — switching from hash to fastembed needs
+  one `crux reindex --force`; switching back is just a config flip.
+- **L5 AST coverage for Lua + Bash** (Task G). New `tree-sitter-lua`
+  (0.1) and `tree-sitter-bash` (0.21) parsers feed the same graph used
+  by `crux find` / `crux symbol` / `crux impact`.
+  - **Lua**: `function name(...)`, `local function name`,
+    `function M:method`, `function M.helper`, `M.helper = function(...)`,
+    `local x = ...` (Constant), `require("foo")` (`ImportsFrom` edge).
+    Function bodies emit `Calls` edges via `function_call` nodes.
+  - **Bash**: `function_definition` (both `name() {…}` and
+    `function name {…}`), `declaration_command` (`local`, `declare`,
+    `readonly`) → Constants, `alias name=value` → Constant with the
+    alias body in `signature`. Function bodies emit `Calls` edges
+    per `command` node. `test_*` and bats `@test` are tagged
+    `is_test = true`.
+  - Files routed via extension: `.lua`, `.sh`, `.bash`. Pure-dotfile
+    rc scripts (`.bashrc`, `.bash_profile`) need an explicit indexer
+    entry — `Path::extension()` doesn't see leading-dot names.
+  - 18 new unit tests (`extract::tests::lua_*`, `extract::tests::bash_*`).
+
 ### Planned
 
 - mdBook documentation chapters.

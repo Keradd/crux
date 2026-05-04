@@ -75,6 +75,8 @@ pub fn parse_with_project(
         Language::TypeScript | Language::JavaScript => {
             visit_js(root, content, &mod_qn, &mut out);
         }
+        Language::Lua => visit_lua(root, content, &mod_qn, &mut out),
+        Language::Bash => visit_bash(root, content, &mod_qn, &mut out),
     }
     crate::resolver::resolve_file_calls(&mut out);
     out
@@ -103,6 +105,8 @@ fn grammar(lang: &Language) -> tree_sitter::Language {
         Language::Python => tree_sitter_python::language(),
         Language::TypeScript => tree_sitter_typescript::language_typescript(),
         Language::JavaScript => tree_sitter_javascript::language(),
+        Language::Lua => tree_sitter_lua::language(),
+        Language::Bash => tree_sitter_bash::language(),
     }
 }
 
@@ -120,6 +124,11 @@ fn module_qn(language: &Language, file_path: &Path) -> String {
     }
     match language {
         Language::Rust | Language::Python => joined.replace('/', "::"),
+        // Lua's `require("foo.bar")` uses dots; mirror that for module
+        // qualified names so `crux find` results read naturally.
+        Language::Lua => joined.replace('/', "."),
+        // Bash has no module concept — keep the file path as-is so the
+        // qn round-trips back to a real on-disk file.
         _ => joined,
     }
 }
@@ -646,6 +655,556 @@ fn handle_js_export<'a>(
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+// Lua (tree-sitter-lua 0.1)
+//
+// Node kinds we extract:
+//   - `function_declaration` — `function foo(...)`, `local function foo`,
+//     `function M:method(...)`, `function M.helper(...)`. The name is the
+//     child between the `function` keyword and the `parameters` node and
+//     can be an `identifier`, `dot_index_expression`, or
+//     `method_index_expression`.
+//   - `variable_declaration` — `local x = …`. We emit a `Constant` node
+//     for each name in the variable list. When the RHS is a
+//     `function_definition` (anonymous `function() … end`) we promote
+//     the constant to a `Function`.
+//   - `assignment_statement` (top-level, no `local`) — `M.helper = function() … end`
+//     promotes to a `Method` on the table receiver.
+//
+// Edges:
+//   - `function_call` whose function is `require` becomes an
+//     `ImportsFrom` edge from the file to the required module name.
+//   - All other `function_call` nodes inside a function body become
+//     `Calls` edges via the shared `collect_calls` helper.
+// ─────────────────────────────────────────────────────────────────────────
+
+fn visit_lua(root: Node<'_>, src: &str, mod_qn: &str, out: &mut ParseResult) {
+    walk_lua(root, src, mod_qn, None, out);
+}
+
+fn walk_lua<'a>(
+    node: Node<'a>,
+    src: &str,
+    mod_qn: &str,
+    parent_qn: Option<&str>,
+    out: &mut ParseResult,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "function_declaration" => {
+                handle_lua_function_decl(child, src, mod_qn, parent_qn, out);
+            }
+            "variable_declaration" => {
+                // `local x = …` (and friends). Always wraps an
+                // `assignment_statement` we delegate to.
+                let mut sub = child.walk();
+                for inner in child.children(&mut sub) {
+                    if inner.kind() == "assignment_statement" {
+                        handle_lua_assignment(inner, src, mod_qn, parent_qn, true, out);
+                    }
+                }
+            }
+            "assignment_statement" => {
+                handle_lua_assignment(child, src, mod_qn, parent_qn, false, out);
+            }
+            "function_call" => {
+                // Top-level `require("foo")` not bound to a name still
+                // counts as an import for the file's purposes.
+                if let Some(target) = lua_require_target(child, src) {
+                    let (ls, _) = line_of(child);
+                    out.edges.push(ParsedEdge {
+                        kind: EdgeKind::ImportsFrom,
+                        source_qn: format!("{mod_qn}:file"),
+                        target_qn: target,
+                        line: ls,
+                        confidence: 0.7,
+                        tier: ConfidenceTier::Inferred,
+                    });
+                }
+            }
+            _ => {
+                walk_lua(child, src, mod_qn, parent_qn, out);
+            }
+        }
+    }
+}
+
+fn handle_lua_function_decl<'a>(
+    node: Node<'a>,
+    src: &str,
+    mod_qn: &str,
+    parent_qn: Option<&str>,
+    out: &mut ParseResult,
+) {
+    // Name is the first child of kind `identifier`,
+    // `dot_index_expression`, or `method_index_expression` after the
+    // `function` keyword. Iterate children until we hit `parameters`.
+    let mut name_node: Option<Node<'a>> = None;
+    let mut cursor = node.walk();
+    for c in node.children(&mut cursor) {
+        match c.kind() {
+            "identifier" | "dot_index_expression" | "method_index_expression" => {
+                name_node = Some(c);
+                break;
+            }
+            "parameters" | "block" | "end" => break,
+            _ => {}
+        }
+    }
+    let Some(name_node) = name_node else { return };
+
+    let (kind, name, owner) = match name_node.kind() {
+        "identifier" => (NodeKind::Function, slice(name_node, src).to_string(), None),
+        "method_index_expression" | "dot_index_expression" => {
+            // Both shapes wrap two identifiers. Take the last one as the
+            // method name and the rest as the receiver.
+            let raw = slice(name_node, src);
+            let sep = if name_node.kind() == "method_index_expression" {
+                ':'
+            } else {
+                '.'
+            };
+            match raw.rsplit_once(sep) {
+                Some((recv, method)) => (
+                    NodeKind::Method,
+                    method.trim().to_string(),
+                    Some(recv.trim().to_string()),
+                ),
+                // Unexpected shape — fall back to the whole literal so the
+                // node still appears in the graph rather than going missing.
+                None => (NodeKind::Function, raw.to_string(), None),
+            }
+        }
+        _ => return,
+    };
+
+    let qn_parent = match owner {
+        Some(o) => Some(qn_join(mod_qn, parent_qn, &o)),
+        None => parent_qn.map(String::from),
+    };
+    let qn = qn_join(mod_qn, qn_parent.as_deref(), &name);
+    let (ls, le) = line_of(node);
+    let signature = lua_signature(node, src);
+    let is_test = name.starts_with("test_") || name.starts_with("test");
+    out.nodes.push(ParsedNode {
+        kind,
+        name,
+        qualified_name: qn.clone(),
+        line_start: ls,
+        line_end: le,
+        parent_qn: qn_parent,
+        signature,
+        is_test,
+    });
+
+    // Walk the body for nested calls + nested function definitions.
+    if let Some(body) = lua_function_body(node) {
+        let mut sub = body.walk();
+        collect_calls(body, &mut sub, src, &qn, out);
+    }
+}
+
+fn handle_lua_assignment<'a>(
+    node: Node<'a>,
+    src: &str,
+    mod_qn: &str,
+    parent_qn: Option<&str>,
+    is_local: bool,
+    out: &mut ParseResult,
+) {
+    let mut var_list: Option<Node<'a>> = None;
+    let mut expr_list: Option<Node<'a>> = None;
+    let mut cursor = node.walk();
+    for c in node.children(&mut cursor) {
+        match c.kind() {
+            "variable_list" => var_list = Some(c),
+            "expression_list" => expr_list = Some(c),
+            _ => {}
+        }
+    }
+    let Some(var_list) = var_list else { return };
+
+    // Pair each variable with its expression by index. Lua allows
+    // `local a, b = 1, 2` so we walk both lists in lock-step.
+    let vars: Vec<Node<'a>> = var_list
+        .children(&mut var_list.walk())
+        .filter(|c| c.kind() != ",")
+        .collect();
+    let exprs: Vec<Node<'a>> = expr_list
+        .map(|e| {
+            e.children(&mut e.walk())
+                .filter(|c| c.kind() != ",")
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    for (i, var) in vars.iter().enumerate() {
+        let raw_name = match var.kind() {
+            "identifier" | "dot_index_expression" | "method_index_expression" => {
+                slice(*var, src).to_string()
+            }
+            _ => continue,
+        };
+        let rhs = exprs.get(i).copied();
+        let is_func = rhs.map(|n| n.kind() == "function_definition").unwrap_or(false);
+        let kind = if is_func {
+            if raw_name.contains('.') || raw_name.contains(':') {
+                NodeKind::Method
+            } else {
+                NodeKind::Function
+            }
+        } else {
+            NodeKind::Constant
+        };
+
+        let (display_name, qn_parent) = if raw_name.contains('.') || raw_name.contains(':') {
+            let sep = if raw_name.contains(':') { ':' } else { '.' };
+            match raw_name.rsplit_once(sep) {
+                Some((recv, m)) => (
+                    m.trim().to_string(),
+                    Some(qn_join(mod_qn, parent_qn, recv.trim())),
+                ),
+                None => (raw_name.clone(), parent_qn.map(String::from)),
+            }
+        } else {
+            (raw_name.clone(), parent_qn.map(String::from))
+        };
+
+        let qn = qn_join(mod_qn, qn_parent.as_deref(), &display_name);
+        let (ls, le) = line_of(node);
+        let mut sig_line = slice(node, src).lines().next().unwrap_or("").to_string();
+        if is_local && !sig_line.starts_with("local ") {
+            sig_line = format!("local {sig_line}");
+        }
+        out.nodes.push(ParsedNode {
+            kind,
+            name: display_name,
+            qualified_name: qn.clone(),
+            line_start: ls,
+            line_end: le,
+            parent_qn: qn_parent,
+            signature: Some(sig_line),
+            is_test: false,
+        });
+
+        // Body-level call extraction for the anonymous-fn case.
+        if is_func {
+            if let Some(rhs) = rhs {
+                if let Some(body) = lua_function_body(rhs) {
+                    let mut sub = body.walk();
+                    collect_calls(body, &mut sub, src, &qn, out);
+                }
+            }
+        }
+
+        // `local x = require("foo")` → ImportsFrom edge.
+        if let Some(rhs) = rhs {
+            if rhs.kind() == "function_call" {
+                if let Some(target) = lua_require_target(rhs, src) {
+                    let (line, _) = line_of(rhs);
+                    out.edges.push(ParsedEdge {
+                        kind: EdgeKind::ImportsFrom,
+                        source_qn: format!("{mod_qn}:file"),
+                        target_qn: target,
+                        line,
+                        confidence: 0.8,
+                        tier: ConfidenceTier::Extracted,
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// Extract the inner `block` body of a `function_declaration` /
+/// `function_definition` so we can run the call collector on it.
+fn lua_function_body<'a>(node: Node<'a>) -> Option<Node<'a>> {
+    let mut cursor = node.walk();
+    for c in node.children(&mut cursor) {
+        if c.kind() == "block" {
+            return Some(c);
+        }
+    }
+    None
+}
+
+/// Build the displayed signature for a Lua function: everything up to
+/// (but not including) the body block.
+fn lua_signature(fn_node: Node<'_>, src: &str) -> Option<String> {
+    if let Some(block) = lua_function_body(fn_node) {
+        let start = fn_node.start_byte();
+        let stop = block.start_byte();
+        Some(src[start..stop].trim().to_string())
+    } else {
+        Some(slice(fn_node, src).lines().next().unwrap_or("").to_string())
+    }
+}
+
+/// If `node` is a `function_call` to `require("...")` return the
+/// required module name.
+fn lua_require_target(node: Node<'_>, src: &str) -> Option<String> {
+    if node.kind() != "function_call" {
+        return None;
+    }
+    let mut cursor = node.walk();
+    let mut callee_is_require = false;
+    let mut module: Option<String> = None;
+    for c in node.children(&mut cursor) {
+        if c.kind() == "identifier" && slice(c, src) == "require" {
+            callee_is_require = true;
+        }
+        if c.kind() == "arguments" {
+            // `require"foo"` and `require("foo")` shapes both end up as
+            // an `arguments` child wrapping a string literal.
+            let mut sub = c.walk();
+            for arg in c.children(&mut sub) {
+                if arg.kind() == "string" {
+                    let raw = slice(arg, src);
+                    let trimmed = raw.trim_matches(|ch: char| ch == '"' || ch == '\'');
+                    module = Some(trimmed.to_string());
+                    break;
+                }
+            }
+        }
+    }
+    if callee_is_require {
+        module
+    } else {
+        None
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Bash (tree-sitter-bash 0.21)
+//
+// Symbols we capture:
+//   - `function_definition` — both `function name() {…}` and `name() {…}`.
+//     Emitted as `Function` nodes; the body is walked for `command`
+//     calls.
+//   - `declaration_command` — `local x=…`, `declare x=…`,
+//     `readonly x=…`. The `variable_assignment.variable_name` becomes a
+//     `Constant` node with the original line as its signature.
+//   - `command` whose first word is `alias` — `alias ll='ls -la'`. The
+//     LHS of the `key=value` concatenation becomes a `Constant` whose
+//     signature carries the full alias body. Anything assigned via
+//     plain `x=...` at the file level surfaces the same way.
+// ─────────────────────────────────────────────────────────────────────────
+
+fn visit_bash(root: Node<'_>, src: &str, mod_qn: &str, out: &mut ParseResult) {
+    walk_bash(root, src, mod_qn, None, out);
+}
+
+fn walk_bash<'a>(
+    node: Node<'a>,
+    src: &str,
+    mod_qn: &str,
+    parent_qn: Option<&str>,
+    out: &mut ParseResult,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "function_definition" => {
+                handle_bash_function_decl(child, src, mod_qn, parent_qn, out);
+            }
+            "declaration_command" => {
+                handle_bash_declaration(child, src, mod_qn, parent_qn, out);
+            }
+            "command" => {
+                // Only `alias` invocations are interesting at the file
+                // level; ordinary commands at the top of a script aren't
+                // declarations of a symbol the agent can reference.
+                if matches!(bash_command_first_word(child, src).as_deref(), Some("alias")) {
+                    handle_bash_alias(child, src, mod_qn, parent_qn, out);
+                }
+            }
+            _ => walk_bash(child, src, mod_qn, parent_qn, out),
+        }
+    }
+}
+
+fn handle_bash_function_decl<'a>(
+    node: Node<'a>,
+    src: &str,
+    mod_qn: &str,
+    parent_qn: Option<&str>,
+    out: &mut ParseResult,
+) {
+    // The name is the first `word` child (both `function name` and
+    // `name()` forms).
+    let mut cursor = node.walk();
+    let name = node
+        .children(&mut cursor)
+        .find(|c| c.kind() == "word")
+        .map(|n| slice(n, src).to_string());
+    let Some(name) = name else { return };
+
+    let qn = qn_join(mod_qn, parent_qn, &name);
+    let (ls, le) = line_of(node);
+    let signature = bash_signature(node, src);
+    // Convention: bats `@test` and bash `test_*` functions are tests.
+    let is_test = name.starts_with("test_") || name.starts_with("@test");
+    out.nodes.push(ParsedNode {
+        kind: NodeKind::Function,
+        name,
+        qualified_name: qn.clone(),
+        line_start: ls,
+        line_end: le,
+        parent_qn: parent_qn.map(String::from),
+        signature,
+        is_test,
+    });
+
+    if let Some(body) = bash_function_body(node) {
+        // Two passes over the body:
+        //   1. `walk_bash` keeps emitting declaration_command / alias /
+        //      nested function_definition nodes — owned by this fn's qn.
+        //   2. `bash_collect_calls` emits a `Calls` edge per `command`
+        //      node that runs inside the body.
+        walk_bash(body, src, mod_qn, Some(&qn), out);
+        bash_collect_calls(body, src, &qn, out);
+    }
+}
+
+fn handle_bash_declaration<'a>(
+    node: Node<'a>,
+    src: &str,
+    mod_qn: &str,
+    parent_qn: Option<&str>,
+    out: &mut ParseResult,
+) {
+    // declaration_command may carry one or many variable_assignments
+    // (e.g. `declare -i a=1 b=2`). Emit one Constant per name.
+    let mut cursor = node.walk();
+    for c in node.children(&mut cursor) {
+        if c.kind() == "variable_assignment" {
+            if let Some(name_node) = c.child_by_field_name("name") {
+                let name = slice(name_node, src).to_string();
+                let qn = qn_join(mod_qn, parent_qn, &name);
+                let (ls, le) = line_of(node);
+                out.nodes.push(ParsedNode {
+                    kind: NodeKind::Constant,
+                    name,
+                    qualified_name: qn,
+                    line_start: ls,
+                    line_end: le,
+                    parent_qn: parent_qn.map(String::from),
+                    signature: Some(slice(node, src).lines().next().unwrap_or("").to_string()),
+                    is_test: false,
+                });
+            }
+        }
+    }
+}
+
+fn handle_bash_alias<'a>(
+    node: Node<'a>,
+    src: &str,
+    mod_qn: &str,
+    parent_qn: Option<&str>,
+    out: &mut ParseResult,
+) {
+    // `alias ll='ls -la'` parses as:
+    //   command
+    //     command_name word=alias
+    //     concatenation
+    //       word=ll=
+    //       raw_string='ls -la'
+    let mut cursor = node.walk();
+    for c in node.children(&mut cursor) {
+        if c.kind() != "concatenation" {
+            continue;
+        }
+        let mut sub = c.walk();
+        let first = c.children(&mut sub).next();
+        let Some(first) = first else { continue };
+        if first.kind() != "word" {
+            continue;
+        }
+        // Strip the trailing `=` that tree-sitter folds into the word.
+        let raw = slice(first, src).trim_end_matches('=').to_string();
+        if raw.is_empty() {
+            continue;
+        }
+        let qn = qn_join(mod_qn, parent_qn, &raw);
+        let (ls, le) = line_of(node);
+        out.nodes.push(ParsedNode {
+            kind: NodeKind::Constant,
+            name: raw,
+            qualified_name: qn,
+            line_start: ls,
+            line_end: le,
+            parent_qn: parent_qn.map(String::from),
+            signature: Some(slice(node, src).lines().next().unwrap_or("").to_string()),
+            is_test: false,
+        });
+    }
+}
+
+fn bash_function_body<'a>(node: Node<'a>) -> Option<Node<'a>> {
+    let mut cursor = node.walk();
+    for c in node.children(&mut cursor) {
+        if c.kind() == "compound_statement" || c.kind() == "do_group" {
+            return Some(c);
+        }
+    }
+    None
+}
+
+fn bash_signature(node: Node<'_>, src: &str) -> Option<String> {
+    // Everything up to (but not including) the body block — usually
+    // just the first line.
+    if let Some(body) = bash_function_body(node) {
+        let start = node.start_byte();
+        let stop = body.start_byte();
+        Some(src[start..stop].trim().to_string())
+    } else {
+        Some(slice(node, src).lines().next().unwrap_or("").to_string())
+    }
+}
+
+fn bash_command_first_word(node: Node<'_>, src: &str) -> Option<String> {
+    let mut cursor = node.walk();
+    let mut command_name: Option<Node<'_>> = None;
+    for c in node.children(&mut cursor) {
+        if c.kind() == "command_name" {
+            command_name = Some(c);
+            break;
+        }
+    }
+    let cn = command_name?;
+    let mut sub = cn.walk();
+    for w in cn.children(&mut sub) {
+        if w.kind() == "word" {
+            return Some(slice(w, src).to_string());
+        }
+    }
+    None
+}
+
+fn bash_collect_calls<'a>(node: Node<'a>, src: &str, source_qn: &str, out: &mut ParseResult) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "command" {
+            if let Some(name) = bash_command_first_word(child, src) {
+                if !name.is_empty() {
+                    let (ls, _) = line_of(child);
+                    out.edges.push(ParsedEdge {
+                        kind: EdgeKind::Calls,
+                        source_qn: source_qn.to_string(),
+                        target_qn: name,
+                        line: ls,
+                        confidence: 0.5,
+                        tier: ConfidenceTier::Inferred,
+                    });
+                }
+            }
+        }
+        bash_collect_calls(child, src, source_qn, out);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // Common helpers
 // ─────────────────────────────────────────────────────────────────────────
 
@@ -706,6 +1265,38 @@ fn collect_calls<'a>(
                         kind: EdgeKind::Calls,
                         source_qn: source_qn.to_string(),
                         target_qn: target.trim().to_string(),
+                        line: ls,
+                        confidence: 0.6,
+                        tier: ConfidenceTier::Inferred,
+                    });
+                }
+            }
+            // Phase 3 / Task G: Lua's `function_call` doesn't expose
+            // a named field for the callee — it's the first child
+            // before the `arguments` node. Iterate manually until we
+            // hit an `identifier` / `dot_index_expression` /
+            // `method_index_expression`.
+            "function_call" => {
+                let mut callee: Option<Node<'a>> = None;
+                let mut sub2 = child.walk();
+                for c in child.children(&mut sub2) {
+                    match c.kind() {
+                        "identifier"
+                        | "dot_index_expression"
+                        | "method_index_expression" => {
+                            callee = Some(c);
+                            break;
+                        }
+                        "arguments" => break,
+                        _ => {}
+                    }
+                }
+                if let Some(callee) = callee {
+                    let (ls, _) = line_of(child);
+                    out.edges.push(ParsedEdge {
+                        kind: EdgeKind::Calls,
+                        source_qn: source_qn.to_string(),
+                        target_qn: slice(callee, src).trim().to_string(),
                         line: ls,
                         confidence: 0.6,
                         tier: ConfidenceTier::Inferred,
@@ -4539,5 +5130,255 @@ mod tests {
             "expected ...::Baz::run from partial nested destructure, got {:?}",
             call_targets
         );
+    }
+
+    // ─── Lua (Phase 3 / Task G) ──────────────────────────────────────
+
+    #[test]
+    fn lua_top_level_function_extracted() {
+        let src = "function add(a, b) return a + b end\n";
+        let r = parse(Language::Lua, src, &PathBuf::from("calc.lua"));
+        let n = r.nodes.iter().find(|n| n.name == "add").expect("add node");
+        assert!(matches!(n.kind, NodeKind::Function));
+        assert_eq!(n.qualified_name, "calc::add");
+        // Signature carries everything before the body block.
+        assert!(n
+            .signature
+            .as_deref()
+            .unwrap_or("")
+            .starts_with("function add(a, b)"));
+    }
+
+    #[test]
+    fn lua_local_function_extracted() {
+        let src = "local function helper(x) return x * 2 end\n";
+        let r = parse(Language::Lua, src, &PathBuf::from("util.lua"));
+        let n = r
+            .nodes
+            .iter()
+            .find(|n| n.name == "helper")
+            .expect("helper node");
+        assert!(matches!(n.kind, NodeKind::Function));
+    }
+
+    #[test]
+    fn lua_method_index_emits_method_node() {
+        // `function M:method(arg) ... end` → Method on receiver M.
+        let src = "local M = {}\nfunction M:greet(name) return 'hi ' .. name end\nreturn M\n";
+        let r = parse(Language::Lua, src, &PathBuf::from("mod.lua"));
+        let n = r
+            .nodes
+            .iter()
+            .find(|n| n.name == "greet")
+            .expect("greet method");
+        assert!(matches!(n.kind, NodeKind::Method));
+        assert_eq!(n.parent_qn.as_deref(), Some("mod::M"));
+        assert_eq!(n.qualified_name, "mod::M::greet");
+    }
+
+    #[test]
+    fn lua_dot_table_function_emits_method_node() {
+        // `function M.helper(x) ... end` → also a Method via dot syntax.
+        let src = "local M = {}\nfunction M.helper(x) return x end\nreturn M\n";
+        let r = parse(Language::Lua, src, &PathBuf::from("mod.lua"));
+        let n = r
+            .nodes
+            .iter()
+            .find(|n| n.name == "helper")
+            .expect("helper method");
+        assert!(matches!(n.kind, NodeKind::Method));
+        assert_eq!(n.parent_qn.as_deref(), Some("mod::M"));
+    }
+
+    #[test]
+    fn lua_local_variable_extracted_as_constant() {
+        let src = "local count = 42\n";
+        let r = parse(Language::Lua, src, &PathBuf::from("data.lua"));
+        let n = r
+            .nodes
+            .iter()
+            .find(|n| n.name == "count")
+            .expect("count node");
+        assert!(matches!(n.kind, NodeKind::Constant));
+        // The signature is prefixed with `local` so callers can tell the
+        // declaration is local even when reading the symbol in isolation.
+        assert!(n.signature.as_deref().unwrap_or("").starts_with("local "));
+    }
+
+    #[test]
+    fn lua_anonymous_function_assigned_to_table_is_method() {
+        // `M.helper = function(z) ... end` — common Lua module pattern.
+        let src = "local M = {}\nM.helper = function(z) return z + 1 end\nreturn M\n";
+        let r = parse(Language::Lua, src, &PathBuf::from("mod.lua"));
+        let n = r
+            .nodes
+            .iter()
+            .find(|n| n.name == "helper")
+            .expect("helper assignment");
+        assert!(matches!(n.kind, NodeKind::Method));
+        assert_eq!(n.parent_qn.as_deref(), Some("mod::M"));
+    }
+
+    #[test]
+    fn lua_require_emits_imports_edge() {
+        let src = "local utils = require('utils')\n";
+        let r = parse(Language::Lua, src, &PathBuf::from("app.lua"));
+        let edge = r
+            .edges
+            .iter()
+            .find(|e| matches!(e.kind, EdgeKind::ImportsFrom))
+            .expect("ImportsFrom edge");
+        assert_eq!(edge.target_qn, "utils");
+        assert_eq!(edge.source_qn, "app:file");
+        assert!(matches!(edge.tier, ConfidenceTier::Extracted));
+    }
+
+    #[test]
+    fn lua_calls_inside_function_body_are_collected() {
+        let src = "local function caller() return helper(1, 2) end\n";
+        let r = parse(Language::Lua, src, &PathBuf::from("a.lua"));
+        let calls: Vec<&str> = r
+            .edges
+            .iter()
+            .filter(|e| matches!(e.kind, EdgeKind::Calls))
+            .map(|e| e.target_qn.as_str())
+            .collect();
+        assert!(
+            calls.contains(&"helper"),
+            "expected `helper` in call targets, got {:?}",
+            calls
+        );
+    }
+
+    // ─── Bash (Phase 3 / Task G) ─────────────────────────────────────
+
+    #[test]
+    fn bash_function_definition_extracted() {
+        let src = "deploy() {\n    echo 'go'\n}\n";
+        let r = parse(Language::Bash, src, &PathBuf::from("scripts/deploy.sh"));
+        let n = r
+            .nodes
+            .iter()
+            .find(|n| n.name == "deploy")
+            .expect("deploy node");
+        assert!(matches!(n.kind, NodeKind::Function));
+        assert_eq!(n.qualified_name, "scripts/deploy::deploy");
+    }
+
+    #[test]
+    fn bash_function_keyword_form_extracted() {
+        // `function name { ... }` — same node kind as `name() { ... }`.
+        let src = "function release {\n    echo 'release'\n}\n";
+        let r = parse(Language::Bash, src, &PathBuf::from("ops.sh"));
+        assert!(r
+            .nodes
+            .iter()
+            .any(|n| n.name == "release" && matches!(n.kind, NodeKind::Function)));
+    }
+
+    #[test]
+    fn bash_local_var_in_function_emits_constant() {
+        // The declaration is inside the function body, so the walker
+        // recurses through `compound_statement`.
+        let src = "deploy() {\n    local target=prod\n}\n";
+        let r = parse(Language::Bash, src, &PathBuf::from("d.sh"));
+        let n = r
+            .nodes
+            .iter()
+            .find(|n| n.name == "target")
+            .expect("target const");
+        assert!(matches!(n.kind, NodeKind::Constant));
+    }
+
+    #[test]
+    fn bash_top_level_declare_emits_constant() {
+        let src = "declare -i COUNT=42\n";
+        let r = parse(Language::Bash, src, &PathBuf::from("a.sh"));
+        let n = r
+            .nodes
+            .iter()
+            .find(|n| n.name == "COUNT")
+            .expect("COUNT const");
+        assert!(matches!(n.kind, NodeKind::Constant));
+    }
+
+    #[test]
+    fn bash_alias_emits_constant() {
+        let src = "alias ll='ls -la'\n";
+        let r = parse(Language::Bash, src, &PathBuf::from("rc.sh"));
+        let n = r.nodes.iter().find(|n| n.name == "ll").expect("ll alias");
+        assert!(matches!(n.kind, NodeKind::Constant));
+        assert_eq!(n.qualified_name, "rc::ll");
+        // Signature preserves the alias body so a `crux find` reader can
+        // see what the alias actually does without re-reading the file.
+        assert!(n.signature.as_deref().unwrap_or("").contains("ls -la"));
+    }
+
+    #[test]
+    fn bash_calls_inside_function_emit_edges() {
+        let src = "deploy() {\n    upload\n    notify_team\n}\n";
+        let r = parse(Language::Bash, src, &PathBuf::from("d.sh"));
+        let targets: Vec<&str> = r
+            .edges
+            .iter()
+            .filter(|e| matches!(e.kind, EdgeKind::Calls))
+            .map(|e| e.target_qn.as_str())
+            .collect();
+        assert!(targets.contains(&"upload"), "missing `upload` in {:?}", targets);
+        assert!(
+            targets.contains(&"notify_team"),
+            "missing `notify_team` in {:?}",
+            targets
+        );
+    }
+
+    #[test]
+    fn bash_test_function_naming_marks_is_test() {
+        let src = "test_login_flow() {\n    return 0\n}\n";
+        let r = parse(Language::Bash, src, &PathBuf::from("t.sh"));
+        let n = r
+            .nodes
+            .iter()
+            .find(|n| n.name == "test_login_flow")
+            .expect("test fn");
+        assert!(n.is_test);
+    }
+
+    #[test]
+    fn bash_top_level_unknown_command_does_not_create_symbol() {
+        // `echo hi` at the file root is not a declaration — make sure
+        // we don't accidentally promote arbitrary commands to nodes
+        // (only `alias` is special-cased).
+        let src = "echo hello\n";
+        let r = parse(Language::Bash, src, &PathBuf::from("a.sh"));
+        let non_file_nodes: Vec<&str> = r
+            .nodes
+            .iter()
+            .filter(|n| !matches!(n.kind, NodeKind::File))
+            .map(|n| n.name.as_str())
+            .collect();
+        assert!(
+            non_file_nodes.is_empty(),
+            "expected only the File node, got extras: {:?}",
+            non_file_nodes
+        );
+    }
+
+    #[test]
+    fn lua_and_bash_extension_routing() {
+        assert!(matches!(
+            Language::from_extension("lua"),
+            Some(Language::Lua)
+        ));
+        assert!(matches!(
+            Language::from_extension("sh"),
+            Some(Language::Bash)
+        ));
+        assert!(matches!(
+            Language::from_extension("bash"),
+            Some(Language::Bash)
+        ));
+        assert!(Language::from_extension("rs").is_some());
+        assert!(Language::from_extension("md").is_none());
     }
 }

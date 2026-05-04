@@ -182,6 +182,19 @@ pub struct L4Config {
     /// L5 graph has indexed at least one symbol for the file. Agents
     /// can opt out per-call via `force_full = true`.
     pub outline_above_lines: u64,
+
+    /// File **basenames** that should be auto-prefetched on session
+    /// start and never evicted. Default set covers the OpenClaw /
+    /// Claude Code memory bundle (`MEMORY.md`, `AGENTS.md`, `SOUL.md`,
+    /// `USER.md`, `TOOLS.md`, `CLAUDE.md`, `IDENTITY.md`,
+    /// `HEARTBEAT.md`). Override with the full list you want — empty
+    /// `[]` disables pinning entirely.
+    pub pinned_files: Vec<String>,
+
+    /// Extra directories (in addition to the project root) to scan when
+    /// resolving `pinned_files`. Tilde / `$HOME` are expanded by the
+    /// caller. Default points at the standard agent-config dirs.
+    pub pinned_search_dirs: Vec<String>,
 }
 
 impl Default for L4Config {
@@ -192,8 +205,38 @@ impl Default for L4Config {
             cache_max_entries: 500,
             contextignore_max_patterns: 200,
             outline_above_lines: 1000,
+            pinned_files: default_pinned_files(),
+            pinned_search_dirs: default_pinned_search_dirs(),
         }
     }
+}
+
+fn default_pinned_files() -> Vec<String> {
+    [
+        "MEMORY.md",
+        "AGENTS.md",
+        "SOUL.md",
+        "USER.md",
+        "TOOLS.md",
+        "CLAUDE.md",
+        "IDENTITY.md",
+        "HEARTBEAT.md",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect()
+}
+
+fn default_pinned_search_dirs() -> Vec<String> {
+    [
+        "~/.openclaw",
+        "~/.claude",
+        ".openclaw",
+        ".claude",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

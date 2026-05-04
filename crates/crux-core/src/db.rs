@@ -72,6 +72,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "turn_log",
         sql: include_str!("../migrations/010_turn_log.sql"),
     },
+    Migration {
+        version: 11,
+        name: "pinned_cache",
+        sql: include_str!("../migrations/011_pinned_cache.sql"),
+    },
 ];
 
 /// Open the database at `path` (creating parent dirs and the file as
@@ -168,6 +173,22 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM crux_migrations", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, MIGRATIONS.len() as u32);
+    }
+
+    #[test]
+    fn pinned_column_present_after_migrations() {
+        let conn = open_in_memory().unwrap();
+        // PRAGMA table_info exposes (cid, name, type, notnull, dflt_value, pk).
+        let mut stmt = conn.prepare("PRAGMA table_info(read_cache)").unwrap();
+        let names: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert!(
+            names.iter().any(|n| n == "pinned"),
+            "read_cache should have a pinned column after migrations; got {names:?}"
+        );
     }
 
     #[test]

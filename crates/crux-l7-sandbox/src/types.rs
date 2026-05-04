@@ -110,6 +110,12 @@ pub struct ExecRequest {
     /// How hard to isolate the child — see [`IsolationLevel`] for the
     /// matrix of guarantees per target.
     pub isolation: IsolationLevel,
+    /// Optional union of agent permissions (Claude Code + OpenClaw) the
+    /// executor checks against the runtime + code body BEFORE spawning
+    /// the child. `None` means "no agent rules in scope" — the executor
+    /// behaves exactly as it always has. Use
+    /// [`crate::agent_perms::load_for_project`] to populate it.
+    pub permissions: Option<crate::permissions::Permissions>,
 }
 
 /// Caps applied to the child when running under [`IsolationLevel::Hard`]
@@ -155,7 +161,16 @@ impl ExecRequest {
             env: HashMap::new(),
             inherit_env: false,
             isolation: IsolationLevel::default(),
+            permissions: None,
         }
+    }
+
+    /// Attach an agent-permission bundle the executor must consult
+    /// before spawning. Builder-style; returns `self` so callers can
+    /// chain it onto a freshly-constructed request.
+    pub fn with_permissions(mut self, perms: crate::permissions::Permissions) -> Self {
+        self.permissions = Some(perms);
+        self
     }
 }
 

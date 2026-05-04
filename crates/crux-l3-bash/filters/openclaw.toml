@@ -1,0 +1,209 @@
+# OpenClaw CLI — status, logs, mcp inspection.
+#
+# Goal: collapse the verbose, banner-heavy output that `openclaw status` and
+# friends emit (boxes, ANSI, absolute paths, repeated headers) into the
+# *signal* an agent actually needs: counts, names, health, errors.
+#
+# The four user-confirmed targets are:
+#   - openclaw status
+#   - openclaw status --deep
+#   - openclaw logs
+#   - openclaw mcp list
+#   - openclaw mcp show <name>
+#
+# All scalar fields go before any [[arrays]] of subtables (TOML rule).
+
+# ── openclaw status (and `--deep`) ──
+[filters.openclaw-status]
+description       = "Compress `openclaw status` banners + drift snapshots."
+match_command     = "^openclaw\\s+status(\\s|$)"
+strip_ansi        = true
+truncate_lines_at = 120
+head_lines        = 18
+tail_lines        = 6
+max_lines         = 30
+strip_lines_matching = [
+  # Decorative borders / box-drawing — ONLY when the line is pure
+  # border (no content rows like `│ name │ ok │ path │`).
+  "^\\s*[─━═╌┄┈┌┐└┘├┤┬┴┼╔╗╚╝╠╣╦╩╬│║┃ ]+\\s*$",
+  # Pure-blank lines and indented helper hints
+  "^$",
+  "^\\s+\\(use ",
+  "^\\s+ℹ️?\\s",
+  # ASCII art banner blocks (3+ repeated punctuation runs)
+  "^\\s*[#*=]{6,}\\s*$",
+]
+
+[[filters.openclaw-status.match_output]]
+pattern = "(?i)\\bno\\s+issues?\\s+(?:found|detected)\\b"
+message = "openclaw status: ok"
+
+[[filters.openclaw-status.match_output]]
+pattern = "(?i)\\ball\\s+(?:agents|servers|hooks)\\s+healthy\\b"
+message = "openclaw status: ok"
+
+[[filters.openclaw-status.replace]]
+pattern     = "/home/[^/\\s]+(/[^\\s]*)"
+replacement = "~$1"
+
+[[filters.openclaw-status.replace]]
+pattern     = "^\\s*✅\\s*"
+replacement = "ok: "
+
+[[filters.openclaw-status.replace]]
+pattern     = "^\\s*❌\\s*"
+replacement = "err: "
+
+[[filters.openclaw-status.replace]]
+pattern     = "^\\s*⚠️?\\s*"
+replacement = "warn: "
+
+# Collapse `Key:                value` (lots of padding) → `Key: value`
+[[filters.openclaw-status.replace]]
+pattern     = "^(\\s*[A-Za-z][\\w .-]*?):\\s{2,}"
+replacement = "$1: "
+
+# ── openclaw logs ──
+[filters.openclaw-logs]
+description       = "Trim openclaw log tails: drop INFO, keep WARN/ERROR + tail."
+match_command     = "^openclaw\\s+logs(\\s|$)"
+strip_ansi        = true
+truncate_lines_at = 240
+tail_lines        = 80
+max_lines         = 120
+on_empty          = "openclaw logs: empty"
+strip_lines_matching = [
+  # Drop pure DEBUG/TRACE lines (very chatty in OpenClaw)
+  "\\b(?:DEBUG|TRACE)\\b",
+  # Pure-blank
+  "^$",
+]
+
+# Strip ISO-8601 timestamp prefix; keep the rest of the message.
+[[filters.openclaw-logs.replace]]
+pattern     = "^\\d{4}-\\d{2}-\\d{2}[T ]\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:?\\d{2})?\\s+"
+replacement = ""
+
+# Normalize log levels to a 4-char tag.
+[[filters.openclaw-logs.replace]]
+pattern     = "\\bINFO\\b"
+replacement = "INF"
+
+[[filters.openclaw-logs.replace]]
+pattern     = "\\bWARN(?:ING)?\\b"
+replacement = "WRN"
+
+[[filters.openclaw-logs.replace]]
+pattern     = "\\bERROR\\b"
+replacement = "ERR"
+
+[[filters.openclaw-logs.replace]]
+pattern     = "/home/[^/\\s]+(/[^\\s]*)"
+replacement = "~$1"
+
+# ── openclaw mcp list ──
+[filters.openclaw-mcp-list]
+description       = "Cap MCP server list; drop decorative columns."
+match_command     = "^openclaw\\s+mcp\\s+list(\\s|$)"
+strip_ansi        = true
+truncate_lines_at = 120
+head_lines        = 12
+tail_lines        = 4
+max_lines         = 25
+strip_lines_matching = [
+  # Pure border rows only (preserve `│ name │ ok │ ...│` content rows).
+  "^\\s*[─━═╌┄┈┌┐└┘├┤┬┴┼╔╗╚╝╠╣╦╩╬│║┃ ]+\\s*$",
+  "^$",
+]
+
+[[filters.openclaw-mcp-list.match_output]]
+pattern = "(?i)\\bno\\s+(?:mcp\\s+)?servers?\\s+(?:configured|registered)\\b"
+message = "openclaw mcp: empty"
+
+[[filters.openclaw-mcp-list.replace]]
+pattern     = "/home/[^/\\s]+(/[^\\s]*)"
+replacement = "~$1"
+
+# ── openclaw mcp show <name> ──
+[filters.openclaw-mcp-show]
+description       = "Compact one-server detail: drop env scaffolding + paths."
+match_command     = "^openclaw\\s+mcp\\s+show\\b"
+strip_ansi        = true
+truncate_lines_at = 200
+head_lines        = 30
+tail_lines        = 10
+max_lines         = 50
+strip_lines_matching = [
+  # Pure border rows only.
+  "^\\s*[─━═╌┄┈┌┐└┘├┤┬┴┼╔╗╚╝╠╣╦╩╬│║┃ ]+\\s*$",
+  "^$",
+  # Drop verbose section banners that just repeat the field name.
+  "^\\s*#\\s+[A-Z][A-Za-z ]+\\s*#\\s*$",
+]
+
+[[filters.openclaw-mcp-show.replace]]
+pattern     = "/home/[^/\\s]+(/[^\\s]*)"
+replacement = "~$1"
+
+[[filters.openclaw-mcp-show.replace]]
+pattern     = "^(\\s*[A-Za-z][\\w .-]*?):\\s{2,}"
+replacement = "$1: "
+
+# ── inline tests ──
+[[tests]]
+name     = "status_clean"
+filter   = "openclaw-status"
+input    = """━━━━━━━━━━━━━━━━━━━━
+OpenClaw Status
+━━━━━━━━━━━━━━━━━━━━
+✅ All agents healthy
+"""
+expected = "openclaw status: ok"
+
+[[tests]]
+name     = "status_collapses_padding_and_path"
+filter   = "openclaw-status"
+input    = """OpenClaw v1.0
+Config:                /home/avery/.openclaw/openclaw.json
+Agents:                3
+"""
+expected = """OpenClaw v1.0
+Config: ~/.openclaw/openclaw.json
+Agents: 3"""
+
+[[tests]]
+name     = "logs_drop_debug_keep_err"
+filter   = "openclaw-logs"
+input    = """2026-05-04T06:00:00Z DEBUG poll tick
+2026-05-04T06:00:01Z INFO server started
+2026-05-04T06:00:02Z ERROR mcp handshake failed: /home/avery/.openclaw/sock
+"""
+expected = """INF server started
+ERR mcp handshake failed: ~/.openclaw/sock"""
+
+[[tests]]
+name     = "logs_empty"
+filter   = "openclaw-logs"
+input    = "\n"
+expected = "openclaw logs: empty"
+
+[[tests]]
+name     = "mcp_list_empty"
+filter   = "openclaw-mcp-list"
+input    = """━━━━━━━━━━━━━━━━━━━━
+MCP Servers
+━━━━━━━━━━━━━━━━━━━━
+No MCP servers configured.
+"""
+expected = "openclaw mcp: empty"
+
+[[tests]]
+name     = "mcp_show_normalizes_padding"
+filter   = "openclaw-mcp-show"
+input    = """Name:                  crux
+Command:               /home/avery/.cargo/bin/crux
+Env:                   {}
+"""
+expected = """Name: crux
+Command: ~/.cargo/bin/crux
+Env: {}"""
