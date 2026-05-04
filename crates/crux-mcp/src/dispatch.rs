@@ -629,13 +629,9 @@ fn find_symbol(runtime: &Runtime, args: &Value) -> Result<String, String> {
             .find_symbol(&project, name, kind)
             .map_err(|e| e.to_string())?
     } else {
-        let mut rows = store
-            .find_symbol_like(&project, name, limit)
-            .map_err(|e| e.to_string())?;
-        if let Some(k) = kind {
-            rows.retain(|n| n.kind.as_str() == k.as_str());
-        }
-        rows
+        store
+            .find_symbol_like(&project, name, kind, limit)
+            .map_err(|e| e.to_string())?
     };
 
     Ok(serde_json::to_string_pretty(&serialize_nodes(&nodes)).unwrap())

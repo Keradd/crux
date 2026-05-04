@@ -114,42 +114,58 @@ fn scan_file(file: &Path, options: &HygieneOptions, report: &mut HygieneReport) 
 }
 
 pub(crate) fn walk(dir: &Path, opts: &HygieneOptions, out: &mut Vec<PathBuf>) -> io::Result<()> {
-    let entries = match fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return Ok(()),
-    };
-    for entry in entries.flatten() {
+    let ignored_dirs = opts.ignored_dirs.clone();
+    let respect = opts.respect_gitignore;
+    let walker = ignore::WalkBuilder::new(dir)
+        .follow_links(opts.follow_symlinks)
+        .hidden(false)
+        .git_ignore(respect)
+        .git_global(respect)
+        .git_exclude(respect)
+        .ignore(respect)
+        .parents(respect)
+        .filter_entry(move |entry| {
+            if let Some(ft) = entry.file_type() {
+                if ft.is_dir() {
+                    if let Some(name) = entry.file_name().to_str() {
+                        if ignored_dirs.iter().any(|d| d == name) {
+                            return false;
+                        }
+                    }
+                }
+            }
+            true
+        })
+        .build();
+    for result in walker {
+        let entry = match result {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let ft = match entry.file_type() {
+            Some(f) => f,
+            None => continue,
+        };
+        if !ft.is_file() {
+            continue;
+        }
         let path = entry.path();
         let name = match path.file_name().and_then(|n| n.to_str()) {
             Some(n) => n.to_string(),
             None => continue,
         };
-        let ft = match entry.file_type() {
-            Ok(f) => f,
-            Err(_) => continue,
-        };
-        if ft.is_symlink() && !opts.follow_symlinks {
+        if opts.ignored_files.iter().any(|f| f == &name) {
             continue;
         }
-        if ft.is_dir() {
-            if opts.ignored_dirs.iter().any(|d| d == &name) {
-                continue;
-            }
-            walk(&path, opts, out)?;
-        } else if ft.is_file() {
-            if opts.ignored_files.iter().any(|f| f == &name) {
-                continue;
-            }
-            let ext = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("")
-                .to_ascii_lowercase();
-            if !opts.include_extensions.iter().any(|e| e == &ext) {
-                continue;
-            }
-            out.push(path);
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if !opts.include_extensions.iter().any(|e| e == &ext) {
+            continue;
         }
+        out.push(path.to_path_buf());
     }
     Ok(())
 }
@@ -662,7 +678,7 @@ fn apply_rules(
             ));
             continue;
         }
-        if has_layer_label(&ln.body) {
+        if is_comment_kind(&ln.kind) && has_layer_label(&ln.body) {
             out.push(violation(
                 file,
                 ln,
@@ -1181,5 +1197,19 @@ fn main() {}
         let opts = HygieneOptions::for_root(dir.path());
         let report = scan_comments(dir.path(), &opts).unwrap();
         assert!(report.violations.iter().any(|v| v.rule_id == "layer-label"));
+    }
+
+    #[test]
+    fn layer_label_not_flagged_in_markdown_prose() {
+        let dir = tempfile::tempdir().unwrap();
+        let body = "# Architecture\n\nLayer 1 read cache.\nLayer 2 MCP shrink.\n";
+        write(dir.path(), "ARCHITECTURE.md", body);
+        let opts = HygieneOptions::for_root(dir.path());
+        let report = scan_comments(dir.path(), &opts).unwrap();
+        assert!(
+            !report.violations.iter().any(|v| v.rule_id == "layer-label"),
+            "markdown prose is the canonical source; got: {:?}",
+            report.violations
+        );
     }
 }

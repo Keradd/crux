@@ -173,20 +173,38 @@ impl<'c> GraphStore<'c> {
         &self,
         project_root: &str,
         pattern: &str,
+        kind: Option<NodeKind>,
         limit: usize,
     ) -> Result<Vec<GraphNode>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, project_root, kind, name, qualified_name, file_path,
-                    line_start, line_end, language, parent_qn, signature, is_test
-             FROM ast_nodes
-             WHERE project_root = ?
-               AND (name LIKE ?2 OR qualified_name LIKE ?2)
-             ORDER BY name LIMIT ?",
-        )?;
+        let kind_filter: Option<String> = kind.map(|k| k.as_str().to_string());
+        let sql = match &kind_filter {
+            Some(_) => {
+                "SELECT id, project_root, kind, name, qualified_name, file_path,
+                        line_start, line_end, language, parent_qn, signature, is_test
+                 FROM ast_nodes
+                 WHERE project_root = ?1
+                   AND (name LIKE ?2 OR qualified_name LIKE ?2)
+                   AND kind = ?3
+                 ORDER BY name LIMIT ?4"
+            }
+            None => {
+                "SELECT id, project_root, kind, name, qualified_name, file_path,
+                        line_start, line_end, language, parent_qn, signature, is_test
+                 FROM ast_nodes
+                 WHERE project_root = ?1
+                   AND (name LIKE ?2 OR qualified_name LIKE ?2)
+                 ORDER BY name LIMIT ?3"
+            }
+        };
+        let mut stmt = self.conn.prepare(sql)?;
         let glob = format!("%{}%", pattern);
-        let rows = stmt
-            .query_map(params![project_root, glob, limit as i64], map_node)?
-            .collect::<rusqlite::Result<_>>()?;
+        let rows: Vec<GraphNode> = if let Some(k) = &kind_filter {
+            stmt.query_map(params![project_root, glob, k, limit as i64], map_node)?
+                .collect::<rusqlite::Result<_>>()?
+        } else {
+            stmt.query_map(params![project_root, glob, limit as i64], map_node)?
+                .collect::<rusqlite::Result<_>>()?
+        };
         Ok(rows)
     }
 
@@ -235,11 +253,53 @@ impl<'c> GraphStore<'c> {
     }
 
     pub fn callers_of(&self, project_root: &str, qn: &str) -> Result<Vec<GraphNode>> {
-        self.related(project_root, qn, EdgeKind::Calls, /*incoming=*/ true)
+        let is_type_like = match self.get_by_qn(project_root, qn)? {
+            Some(n) => matches!(n.kind, NodeKind::Class | NodeKind::Type),
+            None => false,
+        };
+        if is_type_like {
+            self.callers_of_type(project_root, qn)
+        } else {
+            self.related(project_root, qn, EdgeKind::Calls, /*incoming=*/ true)
+        }
     }
 
     pub fn callees_of(&self, project_root: &str, qn: &str) -> Result<Vec<GraphNode>> {
         self.related(project_root, qn, EdgeKind::Calls, /*incoming=*/ false)
+    }
+
+    fn callers_of_type(&self, project_root: &str, qn: &str) -> Result<Vec<GraphNode>> {
+        let leaf = qn.rsplit("::").next().unwrap_or(qn);
+        let method_prefix_full = format!("{qn}::%");
+        let method_prefix_leaf = format!("{leaf}::%");
+        let sql = "SELECT n.id, n.project_root, n.kind, n.name, n.qualified_name, n.file_path,
+                          n.line_start, n.line_end, n.language, n.parent_qn, n.signature, n.is_test
+                   FROM ast_edges e
+                   JOIN ast_nodes n
+                     ON (n.qualified_name = e.source_qn OR n.name = e.source_qn)
+                    AND n.project_root = e.project_root
+                   WHERE e.project_root = ?1
+                     AND e.kind = 'CALLS'
+                     AND (e.target_qn = ?2
+                          OR e.target_qn = ?3
+                          OR e.target_qn LIKE ?4
+                          OR e.target_qn LIKE ?5)
+                   GROUP BY n.id
+                   LIMIT 200";
+        let mut stmt = self.conn.prepare(sql)?;
+        let rows = stmt
+            .query_map(
+                params![
+                    project_root,
+                    qn,
+                    leaf,
+                    method_prefix_full,
+                    method_prefix_leaf
+                ],
+                map_node,
+            )?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(rows)
     }
 
     fn related(
@@ -672,6 +732,89 @@ mod tests {
             .impact_radius("/tmp/proj", "lib::delta::compute_delta", 3, 50)
             .unwrap();
         assert!(radius.iter().any(|n| n.name == "main"));
+    }
+
+    #[test]
+    fn callers_of_type_catches_method_calls_on_struct() {
+        let conn = crux_core::db::open_in_memory().unwrap();
+        let store = GraphStore::new(&conn);
+        let project_root = "/tmp/type-proj";
+        let result = ParseResult {
+            nodes: vec![
+                ParsedNode {
+                    kind: NodeKind::Type,
+                    name: "LayerToggles".to_string(),
+                    qualified_name: "core::config::LayerToggles".to_string(),
+                    line_start: 1,
+                    line_end: 5,
+                    parent_qn: Some("core::config".to_string()),
+                    signature: Some("struct LayerToggles".to_string()),
+                    is_test: false,
+                },
+                ParsedNode {
+                    kind: NodeKind::Function,
+                    name: "dispatch".to_string(),
+                    qualified_name: "mcp::dispatch::dispatch".to_string(),
+                    line_start: 10,
+                    line_end: 20,
+                    parent_qn: Some("mcp::dispatch".to_string()),
+                    signature: Some("fn dispatch()".to_string()),
+                    is_test: false,
+                },
+                ParsedNode {
+                    kind: NodeKind::Function,
+                    name: "audit".to_string(),
+                    qualified_name: "cli::audit::audit".to_string(),
+                    line_start: 30,
+                    line_end: 40,
+                    parent_qn: Some("cli::audit".to_string()),
+                    signature: Some("fn audit()".to_string()),
+                    is_test: false,
+                },
+            ],
+            edges: vec![
+                ParsedEdge {
+                    kind: EdgeKind::Calls,
+                    source_qn: "mcp::dispatch::dispatch".to_string(),
+                    target_qn: "core::config::LayerToggles::default".to_string(),
+                    line: 12,
+                    confidence: 0.9,
+                    tier: ConfidenceTier::Resolved,
+                },
+                ParsedEdge {
+                    kind: EdgeKind::Calls,
+                    source_qn: "cli::audit::audit".to_string(),
+                    target_qn: "LayerToggles::new".to_string(),
+                    line: 33,
+                    confidence: 0.6,
+                    tier: ConfidenceTier::Inferred,
+                },
+            ],
+        };
+        store
+            .write(project_root, "src/config.rs", "rust", "cafebabe", &result)
+            .unwrap();
+
+        let callers = store
+            .callers_of(project_root, "core::config::LayerToggles")
+            .unwrap();
+        let names: Vec<_> = callers.iter().map(|n| n.name.as_str()).collect();
+        assert!(
+            names.contains(&"dispatch"),
+            "fully-qualified Type::method caller must resolve; got {names:?}"
+        );
+        assert!(
+            names.contains(&"audit"),
+            "leaf-prefixed Type::method caller must resolve; got {names:?}"
+        );
+
+        let radius = store
+            .impact_radius(project_root, "core::config::LayerToggles", 2, 50)
+            .unwrap();
+        assert!(
+            radius.iter().any(|n| n.name == "dispatch"),
+            "impact radius must surface type field users via method calls"
+        );
     }
 
     #[test]

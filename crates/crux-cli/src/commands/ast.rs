@@ -103,7 +103,7 @@ pub fn run_find(cli: &Cli, args: &FindArgs) -> Result<()> {
     let nodes = if args.exact {
         store.find_symbol(&key, &args.query, kind)?
     } else {
-        store.find_symbol_like(&key, &args.query, args.limit)?
+        store.find_symbol_like(&key, &args.query, kind, args.limit)?
     };
 
     if cli.json {

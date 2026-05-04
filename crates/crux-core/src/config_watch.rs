@@ -4,6 +4,8 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime};
 
+use sha2::{Digest, Sha256};
+
 use crate::config::{load, Config};
 use crate::error::Result;
 use crate::Runtime;
@@ -17,26 +19,55 @@ pub struct ConfigWatcher {
     reload_counter: Arc<AtomicU64>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct FileStamp {
+    mtime: Option<SystemTime>,
+    size: Option<u64>,
+    hash: Option<[u8; 32]>,
+}
+
+fn stamp_of(path: &Path) -> FileStamp {
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(_) => return FileStamp::default(),
+    };
+    let meta = std::fs::metadata(path).ok();
+    let size = meta.as_ref().map(|m| m.len());
+    let mtime = meta.and_then(|m| m.modified().ok());
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    let hash: [u8; 32] = hasher.finalize().into();
+    FileStamp {
+        mtime,
+        size,
+        hash: Some(hash),
+    }
+}
+
 #[derive(Debug)]
 struct WatcherState {
     global_path: PathBuf,
     project_path: Option<PathBuf>,
-    global_mtime: Option<SystemTime>,
-    project_mtime: Option<SystemTime>,
+    global_stamp: FileStamp,
+    project_stamp: FileStamp,
 }
 
 impl ConfigWatcher {
     pub fn open(project_root: Option<PathBuf>) -> Result<Self> {
         let loaded = load(project_root.as_deref())?;
-        let global_mtime = mtime_of(&loaded.global_path);
-        let project_mtime = loaded.project_path.as_deref().and_then(mtime_of);
+        let global_stamp = stamp_of(&loaded.global_path);
+        let project_stamp = loaded
+            .project_path
+            .as_deref()
+            .map(stamp_of)
+            .unwrap_or_default();
         Ok(Self {
             config: Arc::new(RwLock::new(loaded.config)),
             state: Mutex::new(WatcherState {
                 global_path: loaded.global_path,
                 project_path: loaded.project_path,
-                global_mtime,
-                project_mtime,
+                global_stamp,
+                project_stamp,
             }),
             project_root,
             reload_counter: Arc::new(AtomicU64::new(0)),
@@ -46,15 +77,18 @@ impl ConfigWatcher {
     pub fn from_runtime(runtime: &Runtime) -> Self {
         let global_path = runtime.global_config_path.clone();
         let project_path = runtime.project_config_path.clone();
-        let global_mtime = mtime_of(&global_path);
-        let project_mtime = project_path.as_deref().and_then(mtime_of);
+        let global_stamp = stamp_of(&global_path);
+        let project_stamp = project_path
+            .as_deref()
+            .map(stamp_of)
+            .unwrap_or_default();
         Self {
             config: Arc::new(RwLock::new(runtime.config.clone())),
             state: Mutex::new(WatcherState {
                 global_path,
                 project_path,
-                global_mtime,
-                project_mtime,
+                global_stamp,
+                project_stamp,
             }),
             project_root: runtime.project_root.clone(),
             reload_counter: Arc::new(AtomicU64::new(0)),
@@ -75,10 +109,14 @@ impl ConfigWatcher {
 
     pub fn tick(&self) -> Result<bool> {
         let mut state = self.state.lock().expect("watcher state lock poisoned");
-        let new_global_mtime = mtime_of(&state.global_path);
-        let new_project_mtime = state.project_path.as_deref().and_then(mtime_of);
-        let changed =
-            new_global_mtime != state.global_mtime || new_project_mtime != state.project_mtime;
+        let new_global_stamp = stamp_of(&state.global_path);
+        let new_project_stamp = state
+            .project_path
+            .as_deref()
+            .map(stamp_of)
+            .unwrap_or_default();
+        let changed = new_global_stamp != state.global_stamp
+            || new_project_stamp != state.project_stamp;
         if !changed {
             return Ok(false);
         }
@@ -90,8 +128,8 @@ impl ConfigWatcher {
                 }
                 state.global_path = loaded.global_path;
                 state.project_path = loaded.project_path;
-                state.global_mtime = new_global_mtime;
-                state.project_mtime = new_project_mtime;
+                state.global_stamp = new_global_stamp;
+                state.project_stamp = new_project_stamp;
                 self.reload_counter.fetch_add(1, Ordering::Relaxed);
                 Ok(true)
             }
@@ -154,10 +192,6 @@ impl Drop for WatcherHandle {
     fn drop(&mut self) {
         self.stop();
     }
-}
-
-fn mtime_of(path: &Path) -> Option<SystemTime> {
-    std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
 #[cfg(test)]
@@ -363,6 +397,25 @@ mod tests {
             std::thread::sleep(Duration::from_millis(1100));
             write_project_config(dir.path(), "[layers]\nl7_sandbox = false\n");
             assert!(w.tick().unwrap());
+            assert!(!w.snapshot().layers.l7_sandbox);
+            assert_eq!(w.reload_counter().load(Ordering::Relaxed), 1);
+        });
+    }
+
+    #[test]
+    fn tick_detects_rapid_content_change_without_mtime_wait() {
+        with_crux_home(|_home| {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join(".crux").join("config.toml");
+            write_project_config(dir.path(), "[layers]\nl7_sandbox = true\n");
+            let w = ConfigWatcher::open(Some(dir.path().to_path_buf())).unwrap();
+            assert!(w.snapshot().layers.l7_sandbox);
+
+            fs::write(&path, "[layers]\nl7_sandbox = false\n").unwrap();
+            assert!(
+                w.tick().unwrap(),
+                "size+hash stamp must catch rapid within-second edits"
+            );
             assert!(!w.snapshot().layers.l7_sandbox);
             assert_eq!(w.reload_counter().load(Ordering::Relaxed), 1);
         });

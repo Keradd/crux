@@ -554,6 +554,7 @@ dependencies = [
 name = "crux-l12-hygiene"
 version = "0.4.0"
 dependencies = [
+ "ignore",
  "serde",
  "tempfile",
 ]

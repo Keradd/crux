@@ -105,6 +105,7 @@ fn bench_find_symbol(c: &mut Criterion) {
             store.find_symbol_like(
                 black_box("test_project"),
                 black_box("func_2%"),
+                black_box(None),
                 black_box(10),
             )
         })

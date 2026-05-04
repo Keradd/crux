@@ -38,13 +38,19 @@ pub fn run(cli: &Cli, args: &Args) -> Result<()> {
         None
     };
     let runtime = Runtime::open(project_opt.clone())?;
+    let command_line = args.cmd.join(" ");
+
+    if args.dry_run && !args.filter_only {
+        let mut stderr = std::io::stderr().lock();
+        writeln!(stderr, "[dry-run] would exec: {}", command_line)?;
+        return Ok(());
+    }
 
     if !runtime.config.layers.l3_bash_filter && !args.filter_only {
         return passthrough_exec(&args.cmd);
     }
 
     let engine = FilterEngine::builtin().context("loading built-in filters")?;
-    let command_line = args.cmd.join(" ");
 
     if args.filter_only {
         let mut input = String::new();
@@ -97,16 +103,14 @@ pub fn run(cli: &Cli, args: &Args) -> Result<()> {
     }
     drop(stdout);
 
-    if !args.dry_run {
-        record_telemetry(
-            &runtime,
-            &command_line,
-            &raw,
-            &result,
-            project_opt.as_deref(),
-            elapsed_ms,
-        )?;
-    }
+    record_telemetry(
+        &runtime,
+        &command_line,
+        &raw,
+        &result,
+        project_opt.as_deref(),
+        elapsed_ms,
+    )?;
     let _ = cli; // silence unused; flag plumbing lands later
 
     if let Some(code) = status.code() {

@@ -11,6 +11,7 @@ pub struct HygieneOptions {
     pub ignored_dirs: Vec<String>,
     pub ignored_files: Vec<String>,
     pub follow_symlinks: bool,
+    pub respect_gitignore: bool,
 }
 
 impl HygieneOptions {
@@ -23,6 +24,7 @@ impl HygieneOptions {
             ignored_dirs: default_ignored_dirs(),
             ignored_files: default_ignored_files(),
             follow_symlinks: false,
+            respect_gitignore: true,
         }
     }
 }
@@ -45,6 +47,12 @@ pub fn default_ignored_dirs() -> Vec<String> {
         "build",
         ".next",
         "vendor",
+        "_refs",
+        "third_party",
+        "third-party",
+        "external",
+        "submodules",
+        "deps",
         ".venv",
         "__pycache__",
         ".cache",

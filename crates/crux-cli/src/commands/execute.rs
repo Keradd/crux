@@ -103,6 +103,23 @@ pub fn run(cli: &Cli, args: &ExecuteArgs) -> Result<()> {
     let exec = Executor::new();
     let res = exec.execute(&req)?;
 
+    if isolation == IsolationLevel::Hard {
+        let mut missing: Vec<&str> = Vec::new();
+        if !res.isolation_applied.iter().any(|s| s == "landlock") {
+            missing.push("landlock (rootfs confinement)");
+        }
+        if !res.isolation_applied.iter().any(|s| s == "seccomp") {
+            missing.push("seccomp (syscall filter)");
+        }
+        if !missing.is_empty() {
+            eprintln!(
+                "[crux] warning: --isolate hard is partial on this build; missing {} — \
+                 rebuild with `--features landlock,seccomp` for full confinement",
+                missing.join(", ")
+            );
+        }
+    }
+
     if cli.json {
         let payload = serde_json::json!({
             "runtime":            res.runtime.as_str(),

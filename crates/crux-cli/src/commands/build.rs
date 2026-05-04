@@ -6,7 +6,6 @@ use clap::Args as ClapArgs;
 
 use crux_l12_hygiene::{scan_comments, HygieneOptions};
 
-use super::resolve_project_root;
 use crate::Cli;
 
 #[derive(Debug, ClapArgs)]
@@ -80,7 +79,12 @@ fn resolve_cargo_root(cli: &Cli, args: &Args) -> Result<PathBuf> {
     if let Some(root) = find_cargo_root(&cwd) {
         return Ok(root);
     }
-    Ok(resolve_project_root(cli.project.as_deref()))
+    let _ = cli;
+    Err(anyhow::anyhow!(
+        "no Cargo.toml found from {} up to filesystem root; \
+         pass --root <PATH> or run inside a cargo workspace",
+        cwd.display()
+    ))
 }
 
 fn find_cargo_root(start: &Path) -> Option<PathBuf> {
