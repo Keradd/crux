@@ -173,13 +173,8 @@ impl<'c> ReadCacheManager<'c> {
                     continue;
                 }
                 let abs = absolutize_pin(&candidate);
-                let bytes = self.upsert_pinned_row(
-                    agent_id,
-                    session_id,
-                    project_root,
-                    &abs,
-                    now_epoch,
-                )?;
+                let bytes =
+                    self.upsert_pinned_row(agent_id, session_id, project_root, &abs, now_epoch)?;
                 report.bytes_cached += bytes as u64;
                 report.pinned.push(abs);
                 found = true;
@@ -337,7 +332,6 @@ fn absolutize_pin(p: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::ReadCacheManager;
 
     fn fixture_db() -> rusqlite::Connection {
@@ -394,8 +388,12 @@ mod tests {
         std::fs::write(dir.path().join("MEMORY.md"), "v1\n").unwrap();
 
         let pinned = vec!["MEMORY.md".into()];
-        let r1 = mgr.prefetch_pinned("a", "s", dir.path(), &pinned, &[]).unwrap();
-        let r2 = mgr.prefetch_pinned("a", "s", dir.path(), &pinned, &[]).unwrap();
+        let r1 = mgr
+            .prefetch_pinned("a", "s", dir.path(), &pinned, &[])
+            .unwrap();
+        let r2 = mgr
+            .prefetch_pinned("a", "s", dir.path(), &pinned, &[])
+            .unwrap();
         assert_eq!(r1.pinned.len(), 1);
         assert_eq!(r2.pinned.len(), 1);
         // Still exactly one row in the table.
@@ -440,7 +438,9 @@ mod tests {
         let pinned = vec!["../etc/passwd".into(), "..".into(), "ok.md".into()];
         std::fs::write(dir.path().join("ok.md"), "ok\n").unwrap();
 
-        let r = mgr.prefetch_pinned("a", "s", dir.path(), &pinned, &[]).unwrap();
+        let r = mgr
+            .prefetch_pinned("a", "s", dir.path(), &pinned, &[])
+            .unwrap();
         // Only `ok.md` should be cached; the two malformed entries are
         // silently skipped (and not reported as `missing`, since they're
         // ill-formed rather than absent).

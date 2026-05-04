@@ -136,8 +136,8 @@ impl ConfigWatcher {
         let mut state = self.state.lock().expect("watcher state lock poisoned");
         let new_global_mtime = mtime_of(&state.global_path);
         let new_project_mtime = state.project_path.as_deref().and_then(mtime_of);
-        let changed = new_global_mtime != state.global_mtime
-            || new_project_mtime != state.project_mtime;
+        let changed =
+            new_global_mtime != state.global_mtime || new_project_mtime != state.project_mtime;
         if !changed {
             return Ok(false);
         }
@@ -401,9 +401,7 @@ mod tests {
         with_crux_home(|_home| {
             let dir = tempfile::tempdir().unwrap();
             write_project_config(dir.path(), "[layers]\nl7_sandbox = true\n");
-            let w = Arc::new(
-                ConfigWatcher::open(Some(dir.path().to_path_buf())).unwrap(),
-            );
+            let w = Arc::new(ConfigWatcher::open(Some(dir.path().to_path_buf())).unwrap());
             let handle = w.clone().spawn_polling(Duration::from_millis(100));
 
             // Edit the config; the polling thread should pick it up
@@ -435,9 +433,7 @@ mod tests {
         with_crux_home(|_home| {
             let dir = tempfile::tempdir().unwrap();
             write_project_config(dir.path(), "");
-            let w = Arc::new(
-                ConfigWatcher::open(Some(dir.path().to_path_buf())).unwrap(),
-            );
+            let w = Arc::new(ConfigWatcher::open(Some(dir.path().to_path_buf())).unwrap());
             let mut handle = w.spawn_polling(Duration::from_millis(50));
             handle.stop();
             // Calling stop again must be a no-op.

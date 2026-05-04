@@ -63,22 +63,13 @@ pub struct ExportReport {
 
 /// Per-call knobs. Defaults are safe for the common path — agents don't
 /// need to set anything.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ExportOptions {
     /// Max observations to render. `None` => [`DEFAULT_EXPORT_LIMIT`].
     pub limit: Option<usize>,
     /// Force-overwrite even if the existing file looks hand-written.
     /// Use with care — this destroys data without a backup.
     pub force: bool,
-}
-
-impl Default for ExportOptions {
-    fn default() -> Self {
-        Self {
-            limit: None,
-            force: false,
-        }
-    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -135,11 +126,7 @@ pub fn render_memory_md(
         if items.is_empty() {
             continue;
         }
-        out.push_str(&format!(
-            "## {} ({})\n\n",
-            kind_heading(kind),
-            items.len()
-        ));
+        out.push_str(&format!("## {} ({})\n\n", kind_heading(kind), items.len()));
         for obs in items {
             render_one(&mut out, obs);
         }
@@ -247,7 +234,7 @@ fn render_one(out: &mut String, obs: &Observation) {
 /// line. Anything else (including markdown specials) we leave alone —
 /// the user wrote it and we should display it.
 fn sanitize_title(t: &str) -> String {
-    t.replace('\n', " ").replace('\r', " ").trim().to_string()
+    t.replace(['\n', '\r'], " ").trim().to_string()
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -266,11 +253,7 @@ pub fn export_memory_md<'c>(
 ) -> Result<ExportReport> {
     let limit = opts.limit.unwrap_or(DEFAULT_EXPORT_LIMIT);
     let observations = engine.list(project_root, limit)?;
-    let body = render_memory_md(
-        &observations,
-        project_root,
-        chrono::Utc::now().timestamp(),
-    );
+    let body = render_memory_md(&observations, project_root, chrono::Utc::now().timestamp());
 
     write_atomically(target, &body, opts.force, observations.len())
 }

@@ -177,7 +177,12 @@ pub fn audit(dir: &Path) -> Result<AuditReport> {
     });
 
     // Per-file scans, mirroring alex's `fileScanners` list.
-    push_optional(&mut components, dir, "SOUL.md", ContextCategory::Personality);
+    push_optional(
+        &mut components,
+        dir,
+        "SOUL.md",
+        ContextCategory::Personality,
+    );
     push_optional(&mut components, dir, "MEMORY.md", ContextCategory::Memory);
     push_optional(&mut components, dir, "AGENTS.md", ContextCategory::Agents);
     push_optional(&mut components, dir, "TOOLS.md", ContextCategory::Tools);
@@ -259,12 +264,8 @@ pub fn audit(dir: &Path) -> Result<AuditReport> {
         .map(|c| c.tokens)
         .sum();
 
-    let recommendations = generate_recommendations(
-        &components,
-        active_skills_count,
-        mcp_count,
-        total_tokens,
-    );
+    let recommendations =
+        generate_recommendations(&components, active_skills_count, mcp_count, total_tokens);
 
     Ok(AuditReport {
         openclaw_dir: dir.to_path_buf(),
@@ -282,12 +283,7 @@ pub fn audit(dir: &Path) -> Result<AuditReport> {
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────
 
-fn push_optional(
-    out: &mut Vec<Component>,
-    dir: &Path,
-    name: &str,
-    category: ContextCategory,
-) {
+fn push_optional(out: &mut Vec<Component>, dir: &Path, name: &str, category: ContextCategory) {
     let path = dir.join(name);
     let bytes = match std::fs::read(&path) {
         Ok(b) => b,
@@ -520,10 +516,7 @@ mod tests {
             .components
             .iter()
             .any(|c| c.name == "SOUL.md" && c.tokens > THRESHOLD_SOUL_TOKENS));
-        assert!(r
-            .recommendations
-            .iter()
-            .any(|x| x.kind == "soul_too_large"));
+        assert!(r.recommendations.iter().any(|x| x.kind == "soul_too_large"));
     }
 
     #[test]
@@ -542,7 +535,11 @@ mod tests {
     fn many_skills_fires_too_many_skills() {
         let dir = tempfile::tempdir().unwrap();
         for i in 0..(THRESHOLD_ACTIVE_SKILLS + 2) {
-            let p = dir.path().join("skills").join(format!("s{i}")).join("SKILL.md");
+            let p = dir
+                .path()
+                .join("skills")
+                .join(format!("s{i}"))
+                .join("SKILL.md");
             write(&p, "skill body");
         }
         let r = audit(dir.path()).unwrap();
@@ -589,10 +586,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut servers = serde_json::Map::new();
         for i in 0..(THRESHOLD_MCP_SERVERS + 2) {
-            servers.insert(
-                format!("srv{i}"),
-                serde_json::json!({"command": "x"}),
-            );
+            servers.insert(format!("srv{i}"), serde_json::json!({"command": "x"}));
         }
         let body = serde_json::json!({"mcp": {"servers": servers}});
         std::fs::write(
@@ -615,8 +609,16 @@ mod tests {
         let r = audit(dir.path()).unwrap();
         assert_eq!(r.components[0].category, ContextCategory::System);
         // After system, the larger MEMORY.md must precede AGENTS.md.
-        let memory_idx = r.components.iter().position(|c| c.name == "MEMORY.md").unwrap();
-        let agents_idx = r.components.iter().position(|c| c.name == "AGENTS.md").unwrap();
+        let memory_idx = r
+            .components
+            .iter()
+            .position(|c| c.name == "MEMORY.md")
+            .unwrap();
+        let agents_idx = r
+            .components
+            .iter()
+            .position(|c| c.name == "AGENTS.md")
+            .unwrap();
         assert!(memory_idx < agents_idx);
     }
 }

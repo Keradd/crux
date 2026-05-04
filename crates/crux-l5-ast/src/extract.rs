@@ -846,7 +846,9 @@ fn handle_lua_assignment<'a>(
             _ => continue,
         };
         let rhs = exprs.get(i).copied();
-        let is_func = rhs.map(|n| n.kind() == "function_definition").unwrap_or(false);
+        let is_func = rhs
+            .map(|n| n.kind() == "function_definition")
+            .unwrap_or(false);
         let kind = if is_func {
             if raw_name.contains('.') || raw_name.contains(':') {
                 NodeKind::Method
@@ -919,13 +921,11 @@ fn handle_lua_assignment<'a>(
 /// Extract the inner `block` body of a `function_declaration` /
 /// `function_definition` so we can run the call collector on it.
 fn lua_function_body<'a>(node: Node<'a>) -> Option<Node<'a>> {
+    // NB: the found Node must be bound to a local before the function
+    // exits so the borrow-backed child iterator drops before `cursor`.
     let mut cursor = node.walk();
-    for c in node.children(&mut cursor) {
-        if c.kind() == "block" {
-            return Some(c);
-        }
-    }
-    None
+    let found = node.children(&mut cursor).find(|c| c.kind() == "block");
+    found
 }
 
 /// Build the displayed signature for a Lua function: everything up to
@@ -1014,7 +1014,10 @@ fn walk_bash<'a>(
                 // Only `alias` invocations are interesting at the file
                 // level; ordinary commands at the top of a script aren't
                 // declarations of a symbol the agent can reference.
-                if matches!(bash_command_first_word(child, src).as_deref(), Some("alias")) {
+                if matches!(
+                    bash_command_first_word(child, src).as_deref(),
+                    Some("alias")
+                ) {
                     handle_bash_alias(child, src, mod_qn, parent_qn, out);
                 }
             }
@@ -1142,13 +1145,12 @@ fn handle_bash_alias<'a>(
 }
 
 fn bash_function_body<'a>(node: Node<'a>) -> Option<Node<'a>> {
+    // Same borrow-ordering note as [`lua_function_body`].
     let mut cursor = node.walk();
-    for c in node.children(&mut cursor) {
-        if c.kind() == "compound_statement" || c.kind() == "do_group" {
-            return Some(c);
-        }
-    }
-    None
+    let found = node
+        .children(&mut cursor)
+        .find(|c| c.kind() == "compound_statement" || c.kind() == "do_group");
+    found
 }
 
 fn bash_signature(node: Node<'_>, src: &str) -> Option<String> {
@@ -1281,9 +1283,7 @@ fn collect_calls<'a>(
                 let mut sub2 = child.walk();
                 for c in child.children(&mut sub2) {
                     match c.kind() {
-                        "identifier"
-                        | "dot_index_expression"
-                        | "method_index_expression" => {
+                        "identifier" | "dot_index_expression" | "method_index_expression" => {
                             callee = Some(c);
                             break;
                         }
@@ -5324,7 +5324,11 @@ mod tests {
             .filter(|e| matches!(e.kind, EdgeKind::Calls))
             .map(|e| e.target_qn.as_str())
             .collect();
-        assert!(targets.contains(&"upload"), "missing `upload` in {:?}", targets);
+        assert!(
+            targets.contains(&"upload"),
+            "missing `upload` in {:?}",
+            targets
+        );
         assert!(
             targets.contains(&"notify_team"),
             "missing `notify_team` in {:?}",

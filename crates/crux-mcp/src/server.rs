@@ -11,12 +11,11 @@
 //! A long-lived `crux mcp` session spans many agent tool calls. If the
 //! user edits `~/.crux/config.toml` (or the project's
 //! `.crux/config.toml`) mid-session, we want the next request to see
-//! the new layer flags without needing a restart. A
-//! [`ConfigWatcher`](crux_core::ConfigWatcher) is built from the
-//! `Runtime` at startup and consulted between requests via
-//! [`reload_if_changed`] — on an mtime change the new config is parsed,
-//! validated, and swapped into `runtime.config`. Malformed edits are
-//! logged and ignored so a typo never takes the server down.
+//! the new layer flags without needing a restart. A [`ConfigWatcher`]
+//! is built from the `Runtime` at startup and consulted between
+//! requests: on an mtime change the new config is parsed, validated,
+//! and swapped into `runtime.config`. Malformed edits are logged and
+//! ignored so a typo never takes the server down.
 
 use std::io::{BufRead, BufReader, Write};
 
@@ -275,9 +274,8 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             write_project_config(dir.path(), "");
             let runtime = Runtime::open(Some(dir.path().to_path_buf())).unwrap();
-            let input = Cursor::new(
-                b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n".to_vec(),
-            );
+            let input =
+                Cursor::new(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n".to_vec());
             let mut output: Vec<u8> = Vec::new();
             run_loop(runtime, input, &mut output, None).unwrap();
             let s = String::from_utf8(output).unwrap();

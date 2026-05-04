@@ -348,7 +348,7 @@ mod tests {
     #[test]
     fn allow_overrides_deny() {
         let perms = Permissions::new(
-            vec![rule("Bash(rm *)")],          // deny rm in bash
+            vec![rule("Bash(rm *)")],             // deny rm in bash
             vec![rule("Bash(rm -rf project/*)")], // but allow this specific
         );
         // The allow list is checked first, so even though the deny rule

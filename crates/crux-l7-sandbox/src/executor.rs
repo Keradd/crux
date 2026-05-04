@@ -547,8 +547,7 @@ mod tests {
             ],
             vec![],
         );
-        let req = ExecRequest::new(RuntimeKind::Bash, "rm -rf /tmp/x")
-            .with_permissions(perms);
+        let req = ExecRequest::new(RuntimeKind::Bash, "rm -rf /tmp/x").with_permissions(perms);
         let err = exec.execute(&req).unwrap_err();
         let msg = format!("{err}");
         assert!(
@@ -576,8 +575,7 @@ mod tests {
             ],
             vec![],
         );
-        let req = ExecRequest::new(RuntimeKind::Python, "print('ok')")
-            .with_permissions(perms);
+        let req = ExecRequest::new(RuntimeKind::Python, "print('ok')").with_permissions(perms);
         let res = exec.execute(&req).unwrap();
         assert_eq!(res.exit_code, Some(0));
         assert!(res.stdout.contains("ok"));
@@ -591,13 +589,15 @@ mod tests {
         use crate::permissions::{PermRule, PermScope, PermSource, Permissions};
         let exec = Executor::new();
         let perms = Permissions::new(
-            vec![
-                PermRule::parse("Bash(rm *)", PermSource::ClaudeCode, PermScope::Global).unwrap(),
-            ],
+            vec![PermRule::parse("Bash(rm *)", PermSource::ClaudeCode, PermScope::Global).unwrap()],
             vec![
                 // Project-scoped allow re-enables a specific rm shape.
-                PermRule::parse("Bash(rm /tmp/scratch*)", PermSource::ClaudeCode, PermScope::Project)
-                    .unwrap(),
+                PermRule::parse(
+                    "Bash(rm /tmp/scratch*)",
+                    PermSource::ClaudeCode,
+                    PermScope::Project,
+                )
+                .unwrap(),
             ],
         );
         // Need a real (and harmless) rm target: create + delete a
@@ -605,7 +605,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let scratch = dir.path().join("scratch_l7_perm_test");
         std::fs::write(&scratch, "x").unwrap();
-        let code = format!("rm /tmp/scratch_nonexistent_l7 2>/dev/null; rm '{}'", scratch.display());
+        let code = format!(
+            "rm /tmp/scratch_nonexistent_l7 2>/dev/null; rm '{}'",
+            scratch.display()
+        );
         // The deny rule's pattern (`rm `) matches; the allow rule's
         // pattern (`rm /tmp/scratch`) also matches. Allow wins.
         let req = ExecRequest::new(RuntimeKind::Bash, code).with_permissions(perms);

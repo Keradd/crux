@@ -74,12 +74,7 @@ fn run_once(cli: &Cli) -> Result<()> {
     let stats = telemetry::stats_by_layer(&runtime.conn, pr_str.as_deref())?;
 
     if cli.json {
-        let payload = build_payload(
-            pr_str.as_deref(),
-            &runtime.config.layers,
-            &data,
-            &stats,
-        );
+        let payload = build_payload(pr_str.as_deref(), &runtime.config.layers, &data, &stats);
         println!("{}", serde_json::to_string_pretty(&payload)?);
         return Ok(());
     }
@@ -267,11 +262,7 @@ fn run_watch(cli: &Cli, args: &Args) -> Result<()> {
 /// either NDJSON or text. Lives behind a generic `Write` so tests can
 /// drive it against a `Vec<u8>` without spawning a subprocess.
 #[allow(dead_code)]
-pub(crate) fn watch_step<W: Write>(
-    cli: &Cli,
-    writer: &mut W,
-    interval: Duration,
-) -> Result<()> {
+pub(crate) fn watch_step<W: Write>(cli: &Cli, writer: &mut W, interval: Duration) -> Result<()> {
     let project = resolve_project_root(cli.project.as_deref());
     let project_opt = if project.join(".crux").is_dir() {
         Some(project.clone())
@@ -297,7 +288,13 @@ pub(crate) fn watch_step<W: Write>(
         // honor it (the escape just shows up as garbage but doesn't
         // crash anything).
         write!(writer, "\x1b[2J\x1b[H")?;
-        write_text(writer, project_opt.as_deref(), &runtime.config.layers, &data, &stats)?;
+        write_text(
+            writer,
+            project_opt.as_deref(),
+            &runtime.config.layers,
+            &data,
+            &stats,
+        )?;
         writeln!(
             writer,
             "(audit refresh every {}ms — Ctrl-C to exit)",
@@ -359,7 +356,11 @@ fn write_text<W: Write>(
         data.snapshot.total_savings_tokens,
         data.snapshot.savings_pct
     )?;
-    writeln!(writer, "  observations : {}", data.snapshot.memory_observations)?;
+    writeln!(
+        writer,
+        "  observations : {}",
+        data.snapshot.memory_observations
+    )?;
     writeln!(writer)?;
 
     if !data.patterns_good.is_empty() {

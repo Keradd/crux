@@ -228,15 +228,10 @@ fn default_pinned_files() -> Vec<String> {
 }
 
 fn default_pinned_search_dirs() -> Vec<String> {
-    [
-        "~/.openclaw",
-        "~/.claude",
-        ".openclaw",
-        ".claude",
-    ]
-    .into_iter()
-    .map(String::from)
-    .collect()
+    ["~/.openclaw", "~/.claude", ".openclaw", ".claude"]
+        .into_iter()
+        .map(String::from)
+        .collect()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

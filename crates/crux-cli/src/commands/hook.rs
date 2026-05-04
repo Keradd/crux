@@ -328,8 +328,7 @@ impl CompactOutcome {
 // ────────────────────────────────────────────────────────────────────────
 
 fn openclaw_compact(cli: &Cli) -> Result<()> {
-    let event =
-        read_compact_event_from_stdin().context("reading compact hook event from stdin")?;
+    let event = read_compact_event_from_stdin().context("reading compact hook event from stdin")?;
 
     // Event `cwd` wins over `--project` because the hook runs from the
     // host process's cwd, which may not be the CRUX project root.

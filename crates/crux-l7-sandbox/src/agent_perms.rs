@@ -72,12 +72,7 @@ pub fn load_unioned(project_root: Option<&Path>, home_dir: Option<&Path>) -> Per
     // 4. $OPENCLAW_CONFIG_PATH
     if let Ok(path) = std::env::var(ENV_OPENCLAW_CONFIG) {
         if !path.is_empty() {
-            load_openclaw_into(
-                Path::new(&path),
-                PermScope::Global,
-                &mut deny,
-                &mut allow,
-            );
+            load_openclaw_into(Path::new(&path), PermScope::Global, &mut deny, &mut allow);
         }
     }
     // 5. OpenClaw per-project
@@ -251,7 +246,10 @@ mod tests {
         assert_eq!(perms.deny.len(), 2);
         assert_eq!(perms.allow.len(), 1);
         // Source + scope are echoed correctly.
-        assert!(perms.deny.iter().all(|r| r.source == PermSource::ClaudeCode));
+        assert!(perms
+            .deny
+            .iter()
+            .all(|r| r.source == PermSource::ClaudeCode));
         assert!(perms.deny.iter().all(|r| r.scope == PermScope::Global));
         assert_eq!(perms.allow[0].raw, "Bash(git:*)");
     }

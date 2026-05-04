@@ -7,7 +7,9 @@ use clap::{Args as ClapArgs, Subcommand};
 
 use crux_core::paths::expand_user_path;
 use crux_core::Runtime;
-use crux_l9_coach::{audit_openclaw, openclaw_category_label, CoachEngine, DriftTracker, LoopDetector};
+use crux_l9_coach::{
+    audit_openclaw, openclaw_category_label, CoachEngine, DriftTracker, LoopDetector,
+};
 
 use super::resolve_project_root;
 use crate::Cli;
