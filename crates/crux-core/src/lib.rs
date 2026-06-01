@@ -1,3 +1,5 @@
+#![deny(unsafe_code)]
+
 pub mod config;
 pub mod config_watch;
 pub mod db;
@@ -15,6 +17,7 @@ pub use error::{CruxError, Result};
 pub struct Runtime {
     pub config: Config,
     pub conn: rusqlite::Connection,
+    pub db_path: std::path::PathBuf,
     pub project_root: Option<std::path::PathBuf>,
     pub global_config_path: std::path::PathBuf,
     pub project_config_path: Option<std::path::PathBuf>,
@@ -33,6 +36,7 @@ impl Runtime {
         Ok(Self {
             config: loaded.config,
             conn,
+            db_path,
             project_root,
             global_config_path: loaded.global_path,
             project_config_path: loaded.project_path,

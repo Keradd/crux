@@ -7,14 +7,24 @@ use crux_core::error::Result;
 use crate::embed::{cosine_normalized, unpack_vector, Embedder};
 use crate::types::{ContentType, HybridResult, StoredChunk};
 
-const RRF_K: f64 = 60.0;
-const FTS_FETCH_PER_TOKENIZER: usize = 50;
-const VECTOR_FETCH_LIMIT: usize = 200;
-const SNIPPET_WINDOW: usize = 80;
-const PROXIMITY_ALPHA: f64 = 0.05;
-const PROXIMITY_BETA: f64 = 40.0;
-const FUZZY_MAX_DIST: u32 = 1;
-const FUZZY_VOCAB_CAP: usize = 5_000;
+// Default values — used by standalone functions; SearchEngine methods
+// delegate to self.cfg when the engine was built with with_config().
+#[allow(dead_code)]
+const DEFAULT_RRF_K: f64 = 60.0;
+#[allow(dead_code)]
+const DEFAULT_FTS_FETCH_PER_TOKENIZER: usize = 50;
+#[allow(dead_code)]
+const DEFAULT_VECTOR_FETCH_LIMIT: usize = 200;
+#[allow(dead_code)]
+const DEFAULT_SNIPPET_WINDOW: usize = 80;
+#[allow(dead_code)]
+const DEFAULT_PROXIMITY_ALPHA: f64 = 0.05;
+#[allow(dead_code)]
+const DEFAULT_PROXIMITY_BETA: f64 = 40.0;
+#[allow(dead_code)]
+const DEFAULT_FUZZY_MAX_DIST: u32 = 1;
+#[allow(dead_code)]
+const DEFAULT_FUZZY_VOCAB_CAP: usize = 5_000;
 
 #[derive(Debug, Clone)]
 pub struct SearchOptions {
@@ -31,14 +41,73 @@ impl Default for SearchOptions {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct SearchConfig {
+    pub rrf_k: f64,
+    pub fts_fetch_per_tokenizer: usize,
+    pub vector_fetch_limit: usize,
+    pub snippet_window: usize,
+    pub proximity_alpha: f64,
+    pub proximity_beta: f64,
+    pub fuzzy_max_dist: u32,
+    pub fuzzy_vocab_cap: usize,
+}
+
+impl Default for SearchConfig {
+    fn default() -> Self {
+        Self {
+            rrf_k: 60.0,
+            fts_fetch_per_tokenizer: 50,
+            vector_fetch_limit: 200,
+            snippet_window: 80,
+            proximity_alpha: 0.05,
+            proximity_beta: 40.0,
+            fuzzy_max_dist: 1,
+            fuzzy_vocab_cap: 5_000,
+        }
+    }
+}
+
+impl From<&crux_core::config::L6Config> for SearchConfig {
+    fn from(cfg: &crux_core::config::L6Config) -> Self {
+        Self {
+            rrf_k: cfg.rrf_k as f64,
+            fts_fetch_per_tokenizer: cfg.fts_fetch_per_tokenizer,
+            vector_fetch_limit: cfg.vector_fetch_limit,
+            snippet_window: cfg.snippet_window,
+            proximity_alpha: cfg.proximity_alpha,
+            proximity_beta: cfg.proximity_beta,
+            fuzzy_max_dist: cfg.fuzzy_max_dist,
+            fuzzy_vocab_cap: cfg.fuzzy_vocab_cap,
+        }
+    }
+}
+
 pub struct SearchEngine<'c> {
     conn: &'c Connection,
     embedder: &'c dyn Embedder,
+    cfg: SearchConfig,
 }
 
 impl<'c> SearchEngine<'c> {
     pub fn new(conn: &'c Connection, embedder: &'c dyn Embedder) -> Self {
-        Self { conn, embedder }
+        Self {
+            conn,
+            embedder,
+            cfg: SearchConfig::default(),
+        }
+    }
+
+    pub fn with_config(
+        conn: &'c Connection,
+        embedder: &'c dyn Embedder,
+        cfg: SearchConfig,
+    ) -> Self {
+        Self {
+            conn,
+            embedder,
+            cfg,
+        }
     }
 
     pub fn hybrid_search(
@@ -78,11 +147,16 @@ impl<'c> SearchEngine<'c> {
 
         let mut accum: HashMap<i64, ResultAccum> = HashMap::new();
 
-        merge_ranker(&mut accum, &porter, |acc, r| acc.bm25_porter_rank = Some(r));
-        merge_ranker(&mut accum, &trigram, |acc, r| {
+        let rrf_k = self.cfg.rrf_k;
+        merge_ranker(&mut accum, rrf_k, &porter, |acc, r| {
+            acc.bm25_porter_rank = Some(r)
+        });
+        merge_ranker(&mut accum, rrf_k, &trigram, |acc, r| {
             acc.bm25_trigram_rank = Some(r)
         });
-        merge_ranker(&mut accum, &dense, |acc, r| acc.vector_rank = Some(r));
+        merge_ranker(&mut accum, rrf_k, &dense, |acc, r| {
+            acc.vector_rank = Some(r)
+        });
 
         if accum.is_empty() {
             return Ok(Vec::new());
@@ -97,11 +171,12 @@ impl<'c> SearchEngine<'c> {
             .into_iter()
             .map(|c| {
                 let acc = accum.get(&c.id).cloned().unwrap_or_default();
-                let snippet = best_snippet(&c.content, query);
+                let snippet = best_snippet_with_window(&c.content, query, self.cfg.snippet_window);
                 let mut score = acc.score;
                 if qtokens.len() >= 2 {
                     if let Some(window) = proximity_window(&c.content, &qtokens) {
-                        score += PROXIMITY_ALPHA / (1.0 + (window as f64 / PROXIMITY_BETA));
+                        score += self.cfg.proximity_alpha
+                            / (1.0 + (window as f64 / self.cfg.proximity_beta));
                     }
                 }
                 HybridResult {
@@ -139,7 +214,7 @@ impl<'c> SearchEngine<'c> {
                 corrected.push(t.clone());
                 continue;
             }
-            match nearest_vocab_term(t, &vocab, FUZZY_MAX_DIST) {
+            match nearest_vocab_term(t, &vocab, self.cfg.fuzzy_max_dist) {
                 Some(neighbor) if neighbor != *t => {
                     corrected.push(neighbor);
                     any_change = true;
@@ -160,9 +235,10 @@ impl<'c> SearchEngine<'c> {
               WHERE project_root = ? AND title IS NOT NULL AND title != ''
               LIMIT ?",
         )?;
-        let rows = stmt.query_map(params![project_root, FUZZY_VOCAB_CAP as i64], |r| {
-            r.get::<_, Option<String>>(0)
-        })?;
+        let rows = stmt.query_map(
+            params![project_root, self.cfg.fuzzy_vocab_cap as i64],
+            |r| r.get::<_, Option<String>>(0),
+        )?;
         let mut vocab: HashSet<String> = HashSet::new();
         for row in rows {
             if let Some(title) = row? {
@@ -205,7 +281,7 @@ impl<'c> SearchEngine<'c> {
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt
             .query_map(
-                params![q, project_root, FTS_FETCH_PER_TOKENIZER as i64],
+                params![q, project_root, self.cfg.fts_fetch_per_tokenizer as i64],
                 |r| r.get::<_, i64>(0),
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -240,7 +316,7 @@ impl<'c> SearchEngine<'c> {
                     dim,
                     provider,
                     model,
-                    VECTOR_FETCH_LIMIT as i64
+                    self.cfg.vector_fetch_limit as i64
                 ],
                 |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)),
             )?
@@ -303,14 +379,14 @@ struct ResultAccum {
     vector_rank: Option<usize>,
 }
 
-fn merge_ranker<F>(out: &mut HashMap<i64, ResultAccum>, ranked: &[i64], setter: F)
+fn merge_ranker<F>(out: &mut HashMap<i64, ResultAccum>, rrf_k: f64, ranked: &[i64], setter: F)
 where
     F: Fn(&mut ResultAccum, usize),
 {
     for (rank, id) in ranked.iter().enumerate() {
         let entry = out.entry(*id).or_default();
         let rank_1 = rank + 1;
-        entry.score += 1.0 / (RRF_K + rank_1 as f64);
+        entry.score += 1.0 / (rrf_k + rank_1 as f64);
         setter(entry, rank_1);
     }
 }
@@ -319,6 +395,10 @@ fn kind_clause(kinds: &[ContentType]) -> String {
     if kinds.is_empty() {
         return String::new();
     }
+    // Only known ContentType values are accepted — as_str() returns fixed
+    // strings from enum variants, so this is not user-injectable today.
+    // We format directly for conciseness; if ContentType ever gains a
+    // freeform variant, switch to dynamic parameters.
     let inner = kinds
         .iter()
         .map(|k| format!("'{}'", k.as_str()))
@@ -339,34 +419,36 @@ fn sanitize_fts_query(q: &str) -> String {
     words.join(" OR ")
 }
 
+#[allow(dead_code)]
 fn best_snippet(content: &str, query: &str) -> String {
+    best_snippet_with_window(content, query, DEFAULT_SNIPPET_WINDOW)
+}
+
+fn best_snippet_with_window(content: &str, query: &str, window: usize) -> String {
     let qtokens: Vec<String> = query
         .split(|c: char| !c.is_alphanumeric() && c != '_')
         .filter(|w| !w.is_empty())
         .map(|w| w.to_ascii_lowercase())
         .collect();
     if qtokens.is_empty() {
-        return content.chars().take(SNIPPET_WINDOW).collect();
+        return content.chars().take(window).collect();
     }
     let lower = content.to_ascii_lowercase();
     let mut best_pos = 0usize;
     let mut best_hits = 0usize;
     let mut start = 0usize;
     while start < lower.len() {
-        let end = (start + SNIPPET_WINDOW).min(lower.len());
-        let window = safe_slice(&lower, start, end);
-        let hits = qtokens
-            .iter()
-            .filter(|t| window.contains(t.as_str()))
-            .count();
+        let end = (start + window).min(lower.len());
+        let w = safe_slice(&lower, start, end);
+        let hits = qtokens.iter().filter(|t| w.contains(t.as_str())).count();
         if hits > best_hits {
             best_hits = hits;
             best_pos = start;
         }
-        start += SNIPPET_WINDOW / 2;
+        start += window / 2;
     }
     let lo = best_pos;
-    let hi = (best_pos + SNIPPET_WINDOW).min(content.len());
+    let hi = (best_pos + window).min(content.len());
     let mut snippet = String::new();
     if lo > 0 {
         snippet.push('…');

@@ -212,6 +212,13 @@ pub struct L6Config {
     pub similarity_threshold: f64,
     pub top_k: u32,
     pub rrf_k: u32,
+    pub fts_fetch_per_tokenizer: usize,
+    pub vector_fetch_limit: usize,
+    pub snippet_window: usize,
+    pub proximity_alpha: f64,
+    pub proximity_beta: f64,
+    pub fuzzy_max_dist: u32,
+    pub fuzzy_vocab_cap: usize,
 }
 
 impl Default for L6Config {
@@ -224,6 +231,13 @@ impl Default for L6Config {
             similarity_threshold: 0.7,
             top_k: 10,
             rrf_k: 60,
+            fts_fetch_per_tokenizer: 50,
+            vector_fetch_limit: 200,
+            snippet_window: 80,
+            proximity_alpha: 0.05,
+            proximity_beta: 40.0,
+            fuzzy_max_dist: 1,
+            fuzzy_vocab_cap: 5_000,
         }
     }
 }

@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::OnceLock;
 
 use crux_core::error::{CruxError, Result};
 
@@ -23,14 +24,17 @@ impl FilterEngine {
         Self { filters: vec![] }
     }
 
-    pub fn builtin() -> Result<Self> {
-        let mut engine = Self::empty();
-        for (origin, raw) in BUILTIN_FILTERS {
+    pub fn builtin() -> Result<&'static Self> {
+        static CACHE: OnceLock<FilterEngine> = OnceLock::new();
+        Ok(CACHE.get_or_init(|| {
+            let mut engine = Self::empty();
+            for (origin, raw) in BUILTIN_FILTERS {
+                engine
+                    .add_from_str(raw)
+                    .unwrap_or_else(|e| panic!("builtin filter '{origin}': {e}"));
+            }
             engine
-                .add_from_str(raw)
-                .map_err(|e| CruxError::other(format!("builtin filter '{origin}': {e}")))?;
-        }
-        Ok(engine)
+        }))
     }
 
     pub fn add_from_str(&mut self, toml_src: &str) -> Result<()> {

@@ -1,43 +1,16 @@
 # CRUX Install
 
-CRUX ships as a single Rust binary. Three supported install paths.
+CRUX is a single Rust binary. Build from source via `cargo`.
 
-## One-shot installer (recommended)
-
-From a checkout of the repo. Builds release, installs to
-`~/.local/bin`, auto-registers CRUX as an MCP server in every
-detected agent, and runs the first-time L5 index and L6 reindex
-in your CWD.
+## From crates.io (recommended)
 
 ```bash
-bash scripts/install.sh
-
-# System scope — `/usr/local/bin`, sudo if needed:
-bash scripts/install.sh --system
-
-# Skip bootstrap (just build + install the binary):
-bash scripts/install.sh --no-bootstrap
-
-# Install but do not touch any agent config:
-bash scripts/install.sh --no-agents
+cargo install crux
 ```
 
-After `crux --version` works, every installed agent (Claude Code /
-Desktop, Cursor, Windsurf, Cline, Zed) is already wired up as an
-MCP server pointed at the current directory.
-
-## Prebuilt binaries
-
-Not shipped for v0.4.0 — releases are **source-only** while CRUX is
-still pre-1.0. The
-[GitHub Releases](https://github.com/Keradd/crux/releases) page
-carries the signed tag and the CHANGELOG excerpt only; no tarballs
-or `.sha256` checksums are uploaded.
-
-Use the one-shot installer above or the [from-source](#from-source)
-path below. A cross-platform binary matrix can be reinstated later
-by restoring the `upload-assets` job in
-`.github/workflows/release.yml`.
+Adds `crux` to `~/.cargo/bin/` (ensure it is on your `PATH`).
+After `crux --version` works, run `crux setup` to register it
+as an MCP server inside every detected agent.
 
 ## From source
 
@@ -64,7 +37,7 @@ but the binary was built without the feature.
 
 ## Requirements
 
-- Rust **1.85+**.
+- Rust **1.96+**.
 - SQLite is bundled via `rusqlite` — no system dependency.
 - Optional: `--features crux-l7-sandbox/seccomp` enables Linux
   seccomp BPF syscall filtering (requires kernel ≥ 3.5).

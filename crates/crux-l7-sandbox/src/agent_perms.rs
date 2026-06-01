@@ -52,7 +52,14 @@ pub fn load_unioned(project_root: Option<&Path>, home_dir: Option<&Path>) -> Per
         );
     }
 
-    Permissions::new(deny, allow)
+    let perms = Permissions::new(deny, allow);
+    if perms.has_unknown_tool_rules() {
+        tracing::warn!(
+            "agent permission rules contain tool names that don't match any \
+             known runtime (bash/python/node); these rules will be silently ignored"
+        );
+    }
+    perms
 }
 
 fn load_claude_into(

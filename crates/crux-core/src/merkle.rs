@@ -184,6 +184,10 @@ impl<'c> MerkleSync<'c> {
             return Ok(());
         }
         let now = chrono::Utc::now().timestamp();
+        // SAFETY: MerkleSync<'c> borrows &'c Connection which is !Send/!Sync.
+        // All call sites are single-threaded, and the transaction's
+        // mutable borrow is scoped — no other mutable reference to
+        // self.conn exists within this function.
         let tx = self.conn.unchecked_transaction()?;
         for snap in current.values() {
             tx.execute(
@@ -240,6 +244,8 @@ impl<'c> MerkleSync<'c> {
         if paths.is_empty() {
             return Ok(());
         }
+        // SAFETY: same justification as commit() — MerkleSync is
+        // single-threaded and no other mutable borrow exists.
         let tx = self.conn.unchecked_transaction()?;
         for p in paths {
             tx.execute(

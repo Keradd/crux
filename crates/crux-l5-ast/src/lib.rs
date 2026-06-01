@@ -1,3 +1,5 @@
+#![deny(unsafe_code)]
+
 pub mod extract;
 pub mod graph;
 pub mod indexer;

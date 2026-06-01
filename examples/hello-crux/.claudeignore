@@ -1,0 +1,12 @@
+# CRUX-managed exclusions for Claude / Cursor / Cline / etc.
+.crux/completions/**
+.crux/sessions/**
+.crux/captures/**
+
+target/**
+.git/**
+*.key
+.env
+.env.*
+!.env.example
+.DS_Store

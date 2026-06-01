@@ -6,6 +6,8 @@ rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 description = "CRUX Layer 9: quality scoring, loop detection, CLAUDE.md drift tracker."
+repository.workspace = true
+readme.workspace = true
 
 [dependencies]
 crux-core.workspace = true

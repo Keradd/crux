@@ -1,3 +1,5 @@
+#![deny(unsafe_code)]
+
 pub mod contextignore;
 pub mod delta;
 pub mod pin;
@@ -155,7 +157,7 @@ impl<'c> ReadCacheManager<'c> {
                 } else {
                     None
                 };
-                let tokens_est = estimate_file_tokens(&abs);
+                let tokens_est = estimate_file_tokens(&abs)?;
                 self.update_after_change(
                     existing.id,
                     mtime,
@@ -190,7 +192,7 @@ impl<'c> ReadCacheManager<'c> {
                 Ok(CacheDecision::Allow)
             }
             None => {
-                let tokens_est = estimate_file_tokens(&abs);
+                let tokens_est = estimate_file_tokens(&abs)?;
                 let body = body_to_cache(&abs, opts.delta_max_bytes);
                 self.insert(
                     ev.agent_id,
@@ -397,7 +399,9 @@ impl<'c> ReadCacheManager<'c> {
                 return Ok(d.to_string());
             }
         }
-        let content = std::fs::read_to_string(abs).unwrap_or_default();
+        let content = std::fs::read_to_string(abs).map_err(|e| {
+            CruxError::other(format!("failed to read {} for digest: {e}", abs.display()))
+        })?;
         let digest = structural_digest(abs, &content);
         self.conn.execute(
             "UPDATE read_cache SET digest = ? WHERE id = ?",
@@ -446,10 +450,14 @@ fn mtimes_equal(a: f64, b: f64) -> bool {
     (a - b).abs() < 1e-3
 }
 
-fn estimate_file_tokens(p: &Path) -> i64 {
-    std::fs::metadata(p)
-        .map(|m| crux_core::tokens::estimate_from_bytes(m.len()) as i64)
-        .unwrap_or(0)
+fn estimate_file_tokens(p: &Path) -> Result<i64> {
+    let meta = std::fs::metadata(p).map_err(|e| {
+        CruxError::other(format!(
+            "failed to stat {} for token estimate: {e}",
+            p.display()
+        ))
+    })?;
+    Ok(crux_core::tokens::estimate_from_bytes(meta.len()) as i64)
 }
 
 fn body_to_cache(p: &Path, max_bytes: Option<u64>) -> Option<Vec<u8>> {

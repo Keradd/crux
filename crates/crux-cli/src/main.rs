@@ -1,3 +1,5 @@
+#![deny(unsafe_code)]
+
 mod commands;
 mod logging;
 
@@ -49,7 +51,7 @@ enum Cmd {
 
     Version,
 
-    Mcp,
+    Mcp(commands::mcp::Args),
 
     #[command(name = "mcp-shrink")]
     McpShrink {
@@ -122,7 +124,7 @@ fn dispatch(cli: &Cli) -> anyhow::Result<()> {
         Cmd::Hook(c) => commands::hook::run(cli, c),
         Cmd::Doctor => commands::doctor::run(cli),
         Cmd::Version => commands::version::run(cli),
-        Cmd::Mcp => commands::mcp::run(cli),
+        Cmd::Mcp(a) => commands::mcp::run(cli, a),
         Cmd::McpShrink { upstream } => {
             let code = crux_mcp::run_shrink_proxy(upstream)?;
             std::process::exit(code);

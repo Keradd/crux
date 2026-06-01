@@ -6,6 +6,8 @@ rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 description = "CRUX Humanizer: deterministic local rewrite of AI-flavoured prose into concise, human-sounding text. Preserves code blocks, URLs, paths, and technical literals."
+repository.workspace = true
+readme.workspace = true
 
 [dependencies]
 crux-core.workspace = true

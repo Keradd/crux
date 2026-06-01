@@ -6,6 +6,8 @@ rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 description = "CRUX MCP (Model Context Protocol) server: exposes crux layers as JSON-RPC tools."
+repository.workspace = true
+readme.workspace = true
 
 [dependencies]
 crux-core.workspace = true
@@ -23,6 +25,8 @@ tracing.workspace = true
 chrono.workspace = true
 anyhow.workspace = true
 regex = "1.10"
+ctrlc.workspace = true
+rusqlite.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

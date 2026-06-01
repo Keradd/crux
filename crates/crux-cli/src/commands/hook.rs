@@ -1,5 +1,5 @@
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::Subcommand;
@@ -120,8 +120,9 @@ fn pre_tool(cli: &Cli) -> Result<()> {
         return Ok(());
     }
 
-    let mgr = ReadCacheManager::new(&runtime.conn);
-    let path_buf = PathBuf::from(file_path);
+    // Validate file_path stays within project root
+    let resolved = resolve_in_project(&project, file_path).context("path validation")?;
+    let path_buf = PathBuf::from(resolved);
     let agent_id = if event.agent_id.is_empty() {
         "default"
     } else {
@@ -135,6 +136,7 @@ fn pre_tool(cli: &Cli) -> Result<()> {
 
     let crux_home = crux_core::paths::crux_home().ok();
     let ci = ContextIgnore::load(&project, crux_home.as_deref());
+    let mgr = ReadCacheManager::new(&runtime.conn);
     let opts = CheckOptions {
         contextignore: Some(ci),
         delta_max_bytes: Some(runtime.config.layer.l4.delta_max_bytes),
@@ -331,8 +333,10 @@ fn post_tool(cli: &Cli) -> Result<()> {
     ) {
         if let Some(fp) = event.tool_input.file_path.as_deref() {
             let mgr = ReadCacheManager::new(&runtime.conn);
-            let path_buf = PathBuf::from(fp);
-            mgr.invalidate(&agent_id, &session_id, &project, &path_buf)?;
+            if let Ok(resolved) = resolve_in_project(&project, fp) {
+                let path_buf = PathBuf::from(resolved);
+                mgr.invalidate(&agent_id, &session_id, &project, &path_buf)?;
+            }
         }
     }
 
@@ -464,10 +468,28 @@ fn truncate(s: &str, n: usize) -> &str {
 
 fn not_yet(name: &str, phase: &str) -> Result<()> {
     Err(anyhow::anyhow!(
-        "`crux hook {}` is not implemented yet — see {} in docs/CRUX-DESIGN.md",
-        name,
-        phase
+        "{name} is not yet available during the {phase} hook phase"
     ))
+}
+
+fn resolve_in_project(project_root: &Path, user_path: &str) -> anyhow::Result<String> {
+    let cr = project_root.canonicalize().context("bad project root")?;
+    let target = Path::new(user_path);
+    let abs = if target.is_relative() {
+        cr.join(target)
+    } else {
+        target.to_path_buf()
+    };
+    let ct = abs.canonicalize().context("path cannot be resolved")?;
+    if ct.starts_with(&cr) {
+        Ok(ct.display().to_string())
+    } else {
+        Err(anyhow::anyhow!(
+            "path '{}' escapes project root '{}'",
+            user_path,
+            project_root.display()
+        ))
+    }
 }
 
 #[cfg(test)]

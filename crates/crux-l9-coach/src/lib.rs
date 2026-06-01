@@ -1,3 +1,5 @@
+#![deny(unsafe_code)]
+
 pub mod drift;
 pub mod engine;
 pub mod loop_detect;

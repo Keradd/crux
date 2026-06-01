@@ -6,6 +6,8 @@ rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 description = "CRUX Layer 5: tree-sitter AST graph (Rust + Python + TS/JS + Lua + Bash)."
+repository.workspace = true
+readme.workspace = true
 
 [dependencies]
 crux-core.workspace = true

@@ -137,6 +137,36 @@ impl Permissions {
         PermDecision::Allow
     }
 
+    pub fn has_unknown_tool_rules(&self) -> bool {
+        let known_tools = [
+            "bash",
+            "exec",
+            "shell",
+            "sh",
+            "python",
+            "py",
+            "python3",
+            "node",
+            "js",
+            "javascript",
+            "deno",
+            "*",
+        ];
+        for rule in &self.allow {
+            let t = rule.tool.to_ascii_lowercase();
+            if !known_tools.contains(&t.as_str()) {
+                return true;
+            }
+        }
+        for rule in &self.deny {
+            let t = rule.tool.to_ascii_lowercase();
+            if !known_tools.contains(&t.as_str()) {
+                return true;
+            }
+        }
+        false
+    }
+
     pub fn len(&self) -> usize {
         self.deny.len() + self.allow.len()
     }

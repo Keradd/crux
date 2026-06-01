@@ -82,7 +82,10 @@ fn rewrite(
         .map(|(_, l)| l.raw.as_str())
         .collect();
     let mut out = kept.join("\n");
-    if src.ends_with('\n') && !out.ends_with('\n') {
+    // Preserve all trailing newlines from the original source
+    let trailing: usize = src.chars().rev().take_while(|&c| c == '\n').count();
+    let out_trailing: usize = out.chars().rev().take_while(|&c| c == '\n').count();
+    for _ in out_trailing..trailing {
         out.push('\n');
     }
     (out, removed)

@@ -6,6 +6,8 @@ rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 description = "CRUX Layer 7: subprocess sandbox executor (Python / Bash / Node)."
+repository.workspace = true
+readme.workspace = true
 
 [dependencies]
 crux-core.workspace = true

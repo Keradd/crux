@@ -6,6 +6,8 @@ rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 description = "CRUX Layer 6: hybrid search (BM25 porter + trigram + dense vectors via RRF)."
+repository.workspace = true
+readme.workspace = true
 
 [dependencies]
 crux-core.workspace = true

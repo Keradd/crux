@@ -1,3 +1,5 @@
+#![deny(unsafe_code)]
+
 pub mod engine;
 pub mod pipeline;
 pub mod spec;

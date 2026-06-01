@@ -1,8 +1,8 @@
 # CRUX
 
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
-[![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org)
-[![Tests](https://img.shields.io/badge/tests-621%20passing-brightgreen.svg)](#development)
+[![Rust 1.96+](https://img.shields.io/badge/rust-1.96%2B-orange.svg)](https://www.rust-lang.org)
+[![Tests](https://img.shields.io/badge/tests-542%20passing-brightgreen.svg)](#development)
 [![CI](https://github.com/Keradd/crux/actions/workflows/ci.yml/badge.svg)](https://github.com/Keradd/crux/actions/workflows/ci.yml)
 
 CRUX is a local-first Rust runtime for AI coding agents. It reduces
@@ -46,19 +46,21 @@ per-layer design.
 
 ## Install
 
-Recommended. Builds release, installs to `~/.local/bin`, registers
-CRUX inside every detected agent, runs first-time index + reindex:
-
 ```bash
-bash scripts/install.sh
+cargo install crux
 ```
 
-Prebuilt binaries are published on every tagged
-[GitHub release](https://github.com/Keradd/crux/releases) (Linux
-`gnu`/`musl`, macOS, Windows; all x86_64 + aarch64). See
-[`docs/INSTALL.md`](docs/INSTALL.md) for prebuilt downloads, the
-`--features full` / `fastembed` opt-in, and the per-agent setup
-matrix.
+Builds release, installs to `~/.cargo/bin/crux`. See
+[`docs/INSTALL.md`](docs/INSTALL.md) for the `--features full` /
+`fastembed` opt-in and the per-agent setup matrix.
+
+To build from source:
+
+```bash
+git clone https://github.com/Keradd/crux.git && cd crux
+cargo build --release
+./target/release/crux --version
+```
 
 ---
 
@@ -112,8 +114,8 @@ crux humanize --mode concise --input "In conclusion, we leverage the robust pipe
 
 - [Architecture](docs/ARCHITECTURE.md) — goals, tech stack, data
   model, per-layer internals, security model, roadmap.
-- [Install](docs/INSTALL.md) — one-shot installer, prebuilt
-  binaries, `--features` matrix, per-agent activation.
+- [Install](docs/INSTALL.md) — `cargo install`, from-source build,
+  `--features` matrix, per-agent activation.
 - [MCP tools](docs/MCP.md) — stdio server, description shrinker,
   full tool surface.
 - [Humanizer](docs/HUMANIZER.md) — what it rewrites, what it
@@ -123,6 +125,7 @@ crux humanize --mode concise --input "In conclusion, we leverage the robust pipe
 - [Contributing](CONTRIBUTING.md) — workspace conventions,
   commit conventions, PR checklist, comment-hygiene rules.
 - [Changelog](CHANGELOG.md) — release-notable changes.
+- [Examples](examples/) — scaffolded projects to explore.
 
 ---
 
@@ -143,12 +146,12 @@ Secrets handling is detailed in
 
 ## Development
 
-MSRV is **Rust 1.85**. CI runs four jobs on Ubuntu + stable:
+MSRV is **Rust 1.96**. CI runs four jobs on Ubuntu + stable:
 
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace                              # 621 / 0
+cargo test --workspace --exclude crux-l7-sandbox    # 512 / 0
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 ```
 

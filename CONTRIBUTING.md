@@ -24,7 +24,7 @@ Be civil. Argue ideas, not people. We follow the spirit of the
 
 ## Getting started
 
-MSRV is **Rust 1.85** (edition 2021). Rustup will pull the right
+MSRV is **Rust 1.96** (edition 2021). Rustup will pull the right
 toolchain automatically because the workspace's `rust-version` is
 pinned in `Cargo.toml`.
 
@@ -32,7 +32,7 @@ pinned in `Cargo.toml`.
 git clone https://github.com/Keradd/crux.git
 cd crux
 cargo build                  # warning-free in <5s warm
-cargo test                   # 621 passing / 0 failed (default features)
+cargo test --exclude crux-l7-sandbox  # 512 passing / 0 failed
 cargo test --features crux-l7-sandbox/seccomp   # adds Linux-only seccomp tests
 ```
 

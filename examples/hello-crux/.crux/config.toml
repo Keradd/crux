@@ -1,0 +1,44 @@
+[general]
+log_level = "info"
+
+[layers]
+l1_output = true
+l2_mcp_shrink = true
+l3_bash_filter = true
+l4_read_cache = true
+l5_ast_graph = true
+l6_hybrid_search = true
+l7_sandbox = true
+l8_memory = true
+l9_coach = true
+l10_setup = true
+l11_digest = true
+l12_hygiene = false
+
+[layer.l1]
+profile = "coding"
+intensity = "full"
+
+[layer.l4]
+delta_max_bytes = 51200
+delta_max_lines = 2000
+cache_max_entries = 500
+
+[layer.l5]
+languages = ["rust"]
+bfs_engine = "sql"
+max_impact_nodes = 500
+max_impact_depth = 2
+
+[layer.l6]
+embedding_provider = "hash"
+embedding_model = "hash-256"
+top_k = 10
+rrf_k = 60
+snippet_window = 80
+
+[layer.l7]
+allowed_runtimes = ["lua", "bash"]
+timeout_secs = 30
+memory_limit_mb = 256
+network_allowed = false

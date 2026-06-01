@@ -9,7 +9,7 @@ use crux_core::{paths, Runtime};
 use crux_l6_search::{
     build_embedder, chunks_from_ast_filtered, chunks_from_memory_filtered,
     chunks_from_prose_filtered, list_ast_files, list_memory_files, list_prose_files, ContentType,
-    Indexer, SearchEngine, SearchOptions,
+    Indexer, SearchConfig, SearchEngine, SearchOptions,
 };
 
 use super::resolve_project_root;
@@ -201,7 +201,8 @@ pub fn run_search(cli: &Cli, args: &SearchArgs) -> Result<()> {
     };
 
     let embedder = build_embedder(&runtime.config.layer.l6)?;
-    let engine = SearchEngine::new(&runtime.conn, embedder.as_ref());
+    let search_cfg = SearchConfig::from(&runtime.config.layer.l6);
+    let engine = SearchEngine::with_config(&runtime.conn, embedder.as_ref(), search_cfg);
     let hits = engine.hybrid_search(&key, &args.query, &opts)?;
 
     if cli.json {

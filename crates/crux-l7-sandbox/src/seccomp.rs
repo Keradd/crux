@@ -294,7 +294,9 @@ struct sock_fprog {
     filter: *const sock_filter,
 }
 
-// SAFETY: sock_filter is a plain C struct (Copy + no padding issues).
+// SAFETY: sock_filter is #[repr(C)] with only integer fields (u16, u8, u8, u32).
+// The padding between jf:u8 and k:u32 matches the kernel's struct sock_filter layout.
+// The struct is accessed only from one thread — no shared mutable aliasing exists.
 unsafe impl Send for sock_filter {}
 unsafe impl Sync for sock_filter {}
 
@@ -310,6 +312,11 @@ fn build_bpf_filter(allowed: &[u32]) -> Vec<sock_filter> {
 
     for (i, &sysno) in allowed.iter().enumerate() {
         let remaining = allowed.len() - i - 1;
+        debug_assert!(
+            remaining + 1 <= 255,
+            "BPF jf field overflow: {} remaining syscalls (max 254)",
+            remaining
+        );
         prog.push(sock_filter {
             code: BPF_JMP | BPF_JEQ | BPF_K,
             jt: 0,

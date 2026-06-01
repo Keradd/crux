@@ -6,6 +6,8 @@ rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 description = "CRUX shared foundation: config, db, errors, schema."
+repository.workspace = true
+readme.workspace = true
 
 [dependencies]
 thiserror.workspace = true

@@ -6,6 +6,8 @@ rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 description = "CRUX Layer 4: file read cache (mtime + range deduplication)."
+repository.workspace = true
+readme.workspace = true
 
 [dependencies]
 crux-core.workspace = true

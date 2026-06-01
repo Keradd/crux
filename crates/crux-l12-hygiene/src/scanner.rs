@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -200,11 +201,17 @@ pub(crate) fn detect_lang(p: &Path) -> Lang {
 }
 
 pub(crate) fn classify_lines(src: &str, lang: Lang) -> Vec<ClassifiedLine> {
+    // Normalize Windows \r\n line endings so all classifiers see clean lines
+    let src = if src.contains("\r\n") {
+        Cow::Owned(src.replace("\r\n", "\n"))
+    } else {
+        Cow::Borrowed(src)
+    };
     match lang {
-        Lang::Rust | Lang::JsTs => classify_c_like(src, lang),
-        Lang::Toml | Lang::Yaml => classify_hash(src),
-        Lang::Markdown => classify_markdown(src),
-        Lang::Python => classify_python(src),
+        Lang::Rust | Lang::JsTs => classify_c_like(&src, lang),
+        Lang::Toml | Lang::Yaml => classify_hash(&src),
+        Lang::Markdown => classify_markdown(&src),
+        Lang::Python => classify_python(&src),
         Lang::Other => Vec::new(),
     }
 }
@@ -221,6 +228,7 @@ fn classify_c_like(src: &str, lang: Lang) -> Vec<ClassifiedLine> {
     let mut out = Vec::new();
     let mut state = CxState::Normal;
     for (i, raw) in src.split('\n').enumerate() {
+        let raw = raw.trim_end_matches('\r');
         let (kind, body, next_state) = classify_c_line(raw, lang, state);
         out.push(ClassifiedLine {
             line_no: i + 1,

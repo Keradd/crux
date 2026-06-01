@@ -61,9 +61,7 @@ impl Executor {
         cmd.stderr(Stdio::piped());
 
         if let Some(root) = &req.project_root {
-            if root.is_dir() {
-                cmd.current_dir(root);
-            }
+            cmd.current_dir(root);
         }
 
         if !req.inherit_env {
@@ -78,7 +76,7 @@ impl Executor {
             cmd.env(k, v);
         }
 
-        let isolation_applied = apply_hard_isolation(&mut cmd, req);
+        let (mut isolation_applied, sandbox_pipe_fd) = apply_hard_isolation(&mut cmd, req);
 
         let start = Instant::now();
         let mut child = cmd.spawn().map_err(|e| match e.kind() {
@@ -117,6 +115,27 @@ impl Executor {
             None => (String::new(), false),
         };
 
+        // Read sandbox application status from the child process.
+        // The child writes a flags byte to the pipe after applying
+        // sandbox features.  If the child never wrote (crashed or
+        // missing support), read() returns 0 (EOF) and we remove the
+        // optimistic entries.
+        if let Some(fd) = sandbox_pipe_fd {
+            let mut flags: u8 = 0;
+            let n = unsafe { libc::read(fd, &mut flags as *mut u8 as *mut libc::c_void, 1) };
+            unsafe { libc::close(fd) };
+            if n == 1 {
+                if flags & 1 == 0 {
+                    isolation_applied.retain(|s| s != "landlock");
+                }
+                if flags & 2 == 0 {
+                    isolation_applied.retain(|s| s != "seccomp");
+                }
+            } else {
+                isolation_applied.retain(|s| s != "landlock" && s != "seccomp");
+            }
+        }
+
         Ok(ExecResult {
             runtime: req.runtime,
             stdout: stdout_text,
@@ -137,9 +156,12 @@ impl Default for Executor {
     }
 }
 
-fn apply_hard_isolation(cmd: &mut Command, req: &ExecRequest) -> Vec<String> {
+fn apply_hard_isolation(
+    cmd: &mut Command,
+    req: &ExecRequest,
+) -> (Vec<String>, Option<libc::c_int>) {
     if req.isolation != IsolationLevel::Hard {
-        return Vec::new();
+        return (Vec::new(), None);
     }
     linux::install(cmd, req)
 }
@@ -151,7 +173,10 @@ mod linux {
 
     use crate::types::HardLimits;
 
-    pub(super) fn install(cmd: &mut Command, req: &ExecRequest) -> Vec<String> {
+    pub(super) fn install(
+        cmd: &mut Command,
+        req: &ExecRequest,
+    ) -> (Vec<String>, Option<libc::c_int>) {
         let mut applied = Vec::new();
         let mut limits = HardLimits::default();
         if limits.cpu_seconds == 0 {
@@ -178,25 +203,50 @@ mod linux {
         #[cfg(feature = "seccomp")]
         let runtime = req.runtime;
 
-        // SAFETY: the pre_exec closure runs after fork() and before
+        // Create a pipe to receive sandbox application status from the child.
+        // The child writes a flags byte after applying sandbox features.
+        // The parent reads it after cmd.spawn().
+        // SAFETY: pipe2 is async-signal-safe and called before fork.
+        let mut sandbox_pipe: [libc::c_int; 2] = [0, 0];
+        let pipe_ok = unsafe { libc::pipe2(sandbox_pipe.as_mut_ptr(), libc::O_CLOEXEC) } == 0;
+
+        // SAFETY: the pre_exec closure runs after fork() and before execve().
+        // Only async-signal-safe functions are used: apply_rlimits,
+        // apply_landlock, install_seccomp_filter, libc::write, libc::close.
+        // tracing::warn! is NOT used because it acquires locks that may be
+        // held by the parent at fork time, causing deadlock.
         unsafe {
             let limits = limits;
             cmd.pre_exec(move || {
                 apply_rlimits(&limits)?;
+                let flags: u8 = 0;
                 #[cfg(feature = "landlock")]
                 {
-                    if let Err(e) = apply_landlock(&landlock_roots) {
-                        tracing::warn!(error = %e, "landlock ruleset not enforced");
+                    if apply_landlock(&landlock_roots).is_ok() {
+                        flags |= 1;
                     }
                 }
                 #[cfg(feature = "seccomp")]
                 {
-                    if let Err(e) = crate::seccomp::install_seccomp_filter(runtime) {
-                        tracing::warn!(error = %e, "seccomp filter not enforced");
+                    if crate::seccomp::install_seccomp_filter(runtime).is_ok() {
+                        flags |= 2;
                     }
+                }
+                if pipe_ok {
+                    let _ = libc::write(
+                        sandbox_pipe[1],
+                        &flags as *const u8 as *const libc::c_void,
+                        1,
+                    );
+                    libc::close(sandbox_pipe[1]);
                 }
                 Ok(())
             });
+        }
+
+        // Close parent's write end so read() will get EOF when child closes
+        if pipe_ok {
+            unsafe { libc::close(sandbox_pipe[1]) };
         }
 
         if landlock_requested {
@@ -204,7 +254,9 @@ mod linux {
         }
         #[cfg(feature = "seccomp")]
         applied.push("seccomp".to_string());
-        applied
+
+        let read_fd = if pipe_ok { Some(sandbox_pipe[0]) } else { None };
+        (applied, read_fd)
     }
 
     fn apply_rlimits(limits: &HardLimits) -> std::io::Result<()> {
@@ -281,12 +333,15 @@ mod linux {
 mod linux {
     use super::*;
 
-    pub(super) fn install(_cmd: &mut Command, _req: &ExecRequest) -> Vec<String> {
+    pub(super) fn install(
+        _cmd: &mut Command,
+        _req: &ExecRequest,
+    ) -> (Vec<String>, Option<libc::c_int>) {
         tracing::warn!(
             "IsolationLevel::Hard requested but the current target is not Linux; \
              falling back to portable guarantees"
         );
-        Vec::new()
+        (Vec::new(), None)
     }
 }
 

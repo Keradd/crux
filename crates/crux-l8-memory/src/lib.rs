@@ -1,3 +1,5 @@
+#![deny(unsafe_code)]
+
 pub mod decay;
 pub mod engine;
 pub mod openclaw_export;

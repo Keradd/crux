@@ -104,6 +104,8 @@ impl<'c> Indexer<'c> {
         if file_paths.is_empty() {
             return Ok(0);
         }
+        // SAFETY: Indexer<'c> borrows &'c Connection which is !Send/!Sync.
+        // Single-threaded use, no other mutable borrow exists.
         let tx = self.conn.unchecked_transaction()?;
         let mut removed: u64 = 0;
         for p in file_paths {

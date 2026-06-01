@@ -15,12 +15,13 @@ members = [
     "crates/crux-humanizer",
     "crates/crux-mcp",
     "crates/crux-cli",
+    "fuzz",
 ]
 
 [workspace.package]
 version = "0.4.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.96"
 authors = ["CRUX contributors"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Keradd/crux"
@@ -32,19 +33,19 @@ categories = ["command-line-utilities", "development-tools"]
 
 [workspace.dependencies]
 # Internal
-crux-core = { path = "crates/crux-core" }
-crux-l3-bash = { path = "crates/crux-l3-bash" }
-crux-l4-readcache = { path = "crates/crux-l4-readcache" }
-crux-l5-ast = { path = "crates/crux-l5-ast" }
-crux-l6-search = { path = "crates/crux-l6-search" }
-crux-l7-sandbox = { path = "crates/crux-l7-sandbox" }
-crux-l8-memory = { path = "crates/crux-l8-memory" }
-crux-l9-coach = { path = "crates/crux-l9-coach" }
-crux-l10-setup = { path = "crates/crux-l10-setup" }
-crux-l11-digest = { path = "crates/crux-l11-digest" }
-crux-l12-hygiene = { path = "crates/crux-l12-hygiene" }
-crux-humanizer = { path = "crates/crux-humanizer" }
-crux-mcp = { path = "crates/crux-mcp" }
+crux-core = { path = "crates/crux-core", version = "0.4.0" }
+crux-l3-bash = { path = "crates/crux-l3-bash", version = "0.4.0" }
+crux-l4-readcache = { path = "crates/crux-l4-readcache", version = "0.4.0" }
+crux-l5-ast = { path = "crates/crux-l5-ast", version = "0.4.0" }
+crux-l6-search = { path = "crates/crux-l6-search", version = "0.4.0" }
+crux-l7-sandbox = { path = "crates/crux-l7-sandbox", version = "0.4.0" }
+crux-l8-memory = { path = "crates/crux-l8-memory", version = "0.4.0" }
+crux-l9-coach = { path = "crates/crux-l9-coach", version = "0.4.0" }
+crux-l10-setup = { path = "crates/crux-l10-setup", version = "0.4.0" }
+crux-l11-digest = { path = "crates/crux-l11-digest", version = "0.4.0" }
+crux-l12-hygiene = { path = "crates/crux-l12-hygiene", version = "0.4.0" }
+crux-humanizer = { path = "crates/crux-humanizer", version = "0.4.0" }
+crux-mcp = { path = "crates/crux-mcp", version = "0.4.0" }
 
 # CLI
 clap = { version = "4.5", features = ["derive", "env"] }
@@ -73,6 +74,13 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # Filesystem
 dirs = "5"
+
+# Signal handling
+ctrlc = "3.4"
+
+# Testing
+assert_cmd = "2"
+predicates = "3"
 
 # Hashing (for content_hash, etc.)
 sha2 = "0.10"

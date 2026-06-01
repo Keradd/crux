@@ -1,3 +1,5 @@
+#![deny(unsafe_code)]
+
 pub mod profiles;
 pub mod setup;
 pub mod templates;

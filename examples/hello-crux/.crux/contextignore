@@ -1,0 +1,6 @@
+# Files Layer 4 read-cache will hard-block.
+# Patterns are gitignore-style. One per line.
+
+target/
+*.key
+.env*

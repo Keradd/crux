@@ -1,3 +1,5 @@
+#![deny(unsafe_code)]
+
 pub mod fixer;
 pub mod rules;
 pub mod scanner;

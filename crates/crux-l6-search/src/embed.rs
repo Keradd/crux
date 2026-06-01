@@ -152,9 +152,23 @@ impl Embedder for FastEmbedder {
             .inner
             .lock()
             .map_err(|_| CruxError::other("fastembed mutex poisoned"))?;
-        let mut out = guard
-            .embed(vec![text.to_string()], None)
-            .map_err(|e| CruxError::other(format!("fastembed embed failed: {e}")))?;
+        // Wrap in catch_unwind to prevent a panic inside the ONNX runtime
+        // from poisoning the mutex permanently.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            guard.embed(vec![text.to_string()], None)
+        }));
+        let mut out = match result {
+            Ok(Ok(v)) => v,
+            Ok(Err(e)) => {
+                drop(guard);
+                return Err(CruxError::other(format!("fastembed embed failed: {e}")));
+            }
+            Err(_) => {
+                drop(guard);
+                let _ = self.inner.lock().into_inner();
+                return Err(CruxError::other("fastembed panicked during embed"));
+            }
+        };
         drop(guard);
         let mut v = out
             .pop()
@@ -186,9 +200,22 @@ impl Embedder for FastEmbedder {
             .inner
             .lock()
             .map_err(|_| CruxError::other("fastembed mutex poisoned"))?;
-        let raw = guard
-            .embed(owned, None)
-            .map_err(|e| CruxError::other(format!("fastembed embed_batch failed: {e}")))?;
+        let result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| guard.embed(owned, None)));
+        let raw = match result {
+            Ok(Ok(v)) => v,
+            Ok(Err(e)) => {
+                drop(guard);
+                return Err(CruxError::other(format!(
+                    "fastembed embed_batch failed: {e}"
+                )));
+            }
+            Err(_) => {
+                drop(guard);
+                let _ = self.inner.lock().into_inner();
+                return Err(CruxError::other("fastembed panicked during embed_batch"));
+            }
+        };
         drop(guard);
         let mut out = Vec::with_capacity(raw.len());
         for mut v in raw {

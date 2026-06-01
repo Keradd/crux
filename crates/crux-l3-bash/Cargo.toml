@@ -6,6 +6,8 @@ rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 description = "CRUX Layer 3: bash command output filter (TOML DSL + 3-tier parsers)."
+repository.workspace = true
+readme.workspace = true
 
 [dependencies]
 crux-core.workspace = true

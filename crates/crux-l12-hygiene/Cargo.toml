@@ -6,6 +6,8 @@ rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 description = "CRUX Layer 12: Comment Hygiene / Slop Guard. Deterministic detector and fixer for AI-style verbose comments, decorative banners, and marketing fluff in source files."
+repository.workspace = true
+readme.workspace = true
 
 [dependencies]
 serde.workspace = true

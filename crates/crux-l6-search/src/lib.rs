@@ -1,3 +1,5 @@
+#![deny(unsafe_code)]
+
 pub mod chunker;
 pub mod embed;
 pub mod index;
@@ -15,7 +17,7 @@ pub use embed::FastEmbedder;
 pub use embed::{cosine_normalized, pack_vector, unpack_vector, Embedder, HashEmbedder};
 pub use index::Indexer;
 pub use merkle::{FileChangeSet, FileSnapshot, MerkleSync};
-pub use search::{SearchEngine, SearchOptions};
+pub use search::{SearchConfig, SearchEngine, SearchOptions};
 pub use types::{Chunk, ContentType, HybridResult, IndexStats, StoredChunk};
 
 use crux_core::config::L6Config;
